@@ -15,25 +15,13 @@ export const UserRow: React.FC<UserRowProps> = ({
   onSelectUser,
   onAssignItem,
 }) => {
-  const getInitials = (name: string) => {
-    return name
-      .split(" ")
-      .map((part) => part[0])
-      .join("")
-      .toUpperCase()
-      .substring(0, 2);
-  };
-
   return (
     <div className="bg-white rounded-xl border border-slate-200 hover:border-blue-300 p-3 sm:p-4 transition-all duration-150 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-2xs hover:shadow-xs">
-      {/* Left: User Initials & Name */}
+      {/* Left: User Name */}
       <div
         onClick={() => onSelectUser(user)}
-        className="flex items-center gap-3 min-w-[200px] cursor-pointer group"
+        className="flex items-center min-w-[180px] cursor-pointer group"
       >
-        <div className="w-10 h-10 shrink-0 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shadow-2xs">
-          {getInitials(user.name)}
-        </div>
         <div className="min-w-0">
           <h3 className="text-base font-semibold text-slate-900 group-hover:text-blue-600 transition-colors truncate">
             {user.name}

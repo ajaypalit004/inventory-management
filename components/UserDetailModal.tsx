@@ -29,15 +29,6 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
 
   if (!isOpen || !user) return null;
 
-  const getInitials = (name: string) => {
-    return name
-      .split(" ")
-      .map((part) => part[0])
-      .join("")
-      .toUpperCase()
-      .substring(0, 2);
-  };
-
   const trimmedQuery = itemQuery.trim();
 
   // Filter listed catalog items matching user input
@@ -70,16 +61,11 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
       >
         {/* Header */}
         <div className="p-4 sm:p-5 bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center font-bold text-sm">
-              {getInitials(user.name)}
-            </div>
-            <div>
-              <h2 className="text-lg font-bold leading-tight">{user.name}</h2>
-              <p className="text-xs text-blue-100">
-                {user.assignments.length} assigned items
-              </p>
-            </div>
+          <div>
+            <h2 className="text-lg font-bold leading-tight">{user.name}</h2>
+            <p className="text-xs text-blue-100">
+              {user.assignments.length} assigned items
+            </p>
           </div>
 
           <button
