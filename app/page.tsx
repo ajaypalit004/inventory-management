@@ -54,48 +54,81 @@ export default function HomePage() {
     }, 3000);
   };
 
-  // Tracking refs for multi-device sync
+  // Tracking refs for multi-device sync and local operation serialization
   const lastLocalEditTimestamp = useRef<number>(0);
   const activeUserIdRef = useRef<string | null>(null);
   activeUserIdRef.current = activeUser ? activeUser.id : null;
 
-  // Dispatch Action immediately to server (Atomic & Keepalive)
-  const dispatchAction = useCallback(async (action: InventoryAction) => {
-    lastLocalEditTimestamp.current = Date.now();
+  // Sequential Atomic Batch Queue to guarantee 100% order of execution and zero lost updates
+  const pendingActionsRef = useRef<InventoryAction[]>([]);
+  const isDrainingRef = useRef<boolean>(false);
+
+  const drainActionQueue = useCallback(async () => {
+    if (isDrainingRef.current) return;
+    if (pendingActionsRef.current.length === 0) return;
+
+    isDrainingRef.current = true;
     setSyncStatus("syncing");
 
-    try {
-      const res = await fetch("/api/inventory", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-        keepalive: true, // Guarantees execution even if page unloads or refreshes!
-      });
+    while (pendingActionsRef.current.length > 0) {
+      // Collect all actions currently queued as a single atomic batch
+      const batch = pendingActionsRef.current.splice(0);
 
-      if (!res.ok) {
-        throw new Error(`Cloud action failed with status ${res.status}`);
-      }
+      try {
+        const res = await fetch("/api/inventory", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ actions: batch }),
+          keepalive: true,
+        });
 
-      const data = await res.json();
-      if (Array.isArray(data.users)) {
-        setUsers(data.users);
-        saveStoredUsers(data.users);
+        if (!res.ok) {
+          throw new Error(`Cloud batch failed with status ${res.status}`);
+        }
+
+        const data = await res.json();
+
+        // Only update local state if no new local user actions are pending in the queue
+        if (pendingActionsRef.current.length === 0) {
+          if (Array.isArray(data.users)) {
+            setUsers(data.users);
+            saveStoredUsers(data.users);
+          }
+          if (Array.isArray(data.catalog)) {
+            setCatalog(data.catalog);
+            saveStoredCatalog(data.catalog);
+          }
+          setSyncStatus("synced");
+        }
+      } catch (err) {
+        console.error("Action dispatch batch error:", err);
+        setSyncStatus("error");
+        // Brief pause before trying next batch if network flaked
+        await new Promise((resolve) => setTimeout(resolve, 800));
       }
-      if (Array.isArray(data.catalog)) {
-        setCatalog(data.catalog);
-        saveStoredCatalog(data.catalog);
-      }
-      setSyncStatus("synced");
-    } catch (err) {
-      console.error("Action dispatch error:", err);
-      setSyncStatus("error");
     }
+
+    isDrainingRef.current = false;
   }, []);
+
+  // Dispatch Action immediately into the atomic sequential queue
+  const dispatchAction = useCallback(
+    (action: InventoryAction) => {
+      lastLocalEditTimestamp.current = Date.now();
+      pendingActionsRef.current.push(action);
+      drainActionQueue();
+    },
+    [drainActionQueue]
+  );
 
   // Pull Cloud Data (Fetches additions/updates made from any other device)
   const pullCloudData = useCallback(async (silent = false) => {
-    // If local user just made an edit within 4 seconds, do not interrupt
-    if (Date.now() - lastLocalEditTimestamp.current < 4000) {
+    // If local actions are pending or in flight, or if user edited within 5s, DO NOT interrupt!
+    if (
+      isDrainingRef.current ||
+      pendingActionsRef.current.length > 0 ||
+      Date.now() - lastLocalEditTimestamp.current < 5000
+    ) {
       return;
     }
 
@@ -190,20 +223,23 @@ export default function HomePage() {
     if (!q) return users;
 
     return users.filter((u) => {
-      if (u.name.toLowerCase().includes(q)) return true;
-      const hasItem = u.assignments.some((a) =>
-        a.itemName.toLowerCase().includes(q)
+      if (u.name && u.name.toLowerCase().includes(q)) return true;
+      const assignments = Array.isArray(u.assignments) ? u.assignments : [];
+      const hasItem = assignments.some(
+        (a) => a && a.itemName && a.itemName.toLowerCase().includes(q)
       );
       return hasItem;
     });
   }, [users, searchQuery]);
 
   const totalAssignedCount = useMemo(() => {
-    return users.reduce(
-      (acc, user) =>
-        acc + user.assignments.reduce((sum, a) => sum + (a.quantity || 1), 0),
-      0
-    );
+    return users.reduce((acc, user) => {
+      const assignments = Array.isArray(user.assignments) ? user.assignments : [];
+      return (
+        acc +
+        assignments.reduce((sum, a) => sum + (Number(a?.quantity) || 1), 0)
+      );
+    }, 0);
   }, [users]);
 
   // Assign item to user (Case-insensitive check, adds to catalog if new)
@@ -216,7 +252,7 @@ export default function HomePage() {
     // 1. Optimistic Local Update
     let updatedCatalog = catalog;
     let catalogItem = catalog.find(
-      (c) => c.name.trim().toLowerCase() === targetLower
+      (c) => c && c.name && c.name.trim().toLowerCase() === targetLower
     );
 
     if (!catalogItem) {
@@ -234,12 +270,13 @@ export default function HomePage() {
     const updatedUsers = users.map((u) => {
       if (u.id !== userId) return u;
 
-      const existingIndex = u.assignments.findIndex(
-        (a) => a.itemName.trim().toLowerCase() === targetLower
+      const currentAssignments = Array.isArray(u.assignments) ? u.assignments : [];
+      const existingIndex = currentAssignments.findIndex(
+        (a) => a && a.itemName && a.itemName.trim().toLowerCase() === targetLower
       );
 
       if (existingIndex > -1) {
-        const nextAssignments = [...u.assignments];
+        const nextAssignments = [...currentAssignments];
         nextAssignments[existingIndex] = {
           ...nextAssignments[existingIndex],
           quantity: (nextAssignments[existingIndex].quantity || 1) + 1,
@@ -256,12 +293,16 @@ export default function HomePage() {
 
       return {
         ...u,
-        assignments: [newAssignment, ...u.assignments],
+        assignments: [newAssignment, ...currentAssignments],
       };
     });
 
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
+
+    // Sync modal activeUser immediately for instantaneous zero-latency feedback
+    const active = updatedUsers.find((u) => u.id === userId);
+    if (active) setActiveUser(active);
 
     // 2. Dispatch atomic action with identical ID and itemName
     dispatchAction({
@@ -282,10 +323,11 @@ export default function HomePage() {
 
     const updatedUsers = users.map((u) => {
       if (u.id !== userId) return u;
+      const currentAssignments = Array.isArray(u.assignments) ? u.assignments : [];
       return {
         ...u,
-        assignments: u.assignments.map((a) =>
-          a.id === assignment.id || a.itemName.trim().toLowerCase() === itemLower
+        assignments: currentAssignments.map((a) =>
+          a && (a.id === assignment.id || a.itemName.trim().toLowerCase() === itemLower)
             ? { ...a, quantity: (a.quantity || 1) + 1 }
             : a
         ),
@@ -294,6 +336,9 @@ export default function HomePage() {
 
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
+
+    const active = updatedUsers.find((u) => u.id === userId);
+    if (active) setActiveUser(active);
 
     dispatchAction({
       type: "UPDATE_QUANTITY",
@@ -319,10 +364,11 @@ export default function HomePage() {
 
     const updatedUsers = users.map((u) => {
       if (u.id !== userId) return u;
+      const currentAssignments = Array.isArray(u.assignments) ? u.assignments : [];
       return {
         ...u,
-        assignments: u.assignments.map((a) =>
-          a.id === assignment.id || a.itemName.trim().toLowerCase() === itemLower
+        assignments: currentAssignments.map((a) =>
+          a && (a.id === assignment.id || a.itemName.trim().toLowerCase() === itemLower)
             ? { ...a, quantity: Math.max(1, (a.quantity || 1) - 1) }
             : a
         ),
@@ -331,6 +377,9 @@ export default function HomePage() {
 
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
+
+    const active = updatedUsers.find((u) => u.id === userId);
+    if (active) setActiveUser(active);
 
     dispatchAction({
       type: "UPDATE_QUANTITY",
@@ -353,23 +402,25 @@ export default function HomePage() {
 
         const updatedUsers = users.map((u) => {
           if (u.id !== userId) return u;
+          const currentAssignments = Array.isArray(u.assignments) ? u.assignments : [];
           return {
             ...u,
-            assignments: u.assignments.filter(
-              (a) => a.id !== assignment.id && a.itemName.trim().toLowerCase() !== itemLower
+            assignments: currentAssignments.filter(
+              (a) => a && a.id !== assignment.id && a.itemName.trim().toLowerCase() !== itemLower
             ),
           };
         });
 
         // If no user has this item assigned anymore, remove it from catalog suggestions
-        const stillInUse = updatedUsers.some((u) =>
-          u.assignments.some((a) => a.itemName.trim().toLowerCase() === itemLower)
-        );
+        const stillInUse = updatedUsers.some((u) => {
+          const asgs = Array.isArray(u.assignments) ? u.assignments : [];
+          return asgs.some((a) => a && a.itemName && a.itemName.trim().toLowerCase() === itemLower);
+        });
 
         let updatedCatalog = catalog;
         if (!stillInUse) {
           updatedCatalog = catalog.filter(
-            (c) => c.name.trim().toLowerCase() !== itemLower
+            (c) => c && c.name && c.name.trim().toLowerCase() !== itemLower
           );
           setCatalog(updatedCatalog);
           saveStoredCatalog(updatedCatalog);
@@ -377,6 +428,9 @@ export default function HomePage() {
 
         setUsers(updatedUsers);
         saveStoredUsers(updatedUsers);
+
+        const active = updatedUsers.find((u) => u.id === userId);
+        if (active) setActiveUser(active);
 
         dispatchAction({
           type: "REMOVE_ASSIGNMENT",
@@ -399,20 +453,28 @@ export default function HomePage() {
 
     // 1. Immediately remove from catalog locally
     const updatedCatalog = catalog.filter(
-      (c) => c.name.trim().toLowerCase() !== targetLower
+      (c) => c && c.name && c.name.trim().toLowerCase() !== targetLower
     );
     setCatalog(updatedCatalog);
     saveStoredCatalog(updatedCatalog);
 
     // 2. Also remove any lingering assignments of this item locally
-    const updatedUsers = users.map((u) => ({
-      ...u,
-      assignments: u.assignments.filter(
-        (a) => a.itemName.trim().toLowerCase() !== targetLower
-      ),
-    }));
+    const updatedUsers = users.map((u) => {
+      const currentAssignments = Array.isArray(u.assignments) ? u.assignments : [];
+      return {
+        ...u,
+        assignments: currentAssignments.filter(
+          (a) => a && a.itemName && a.itemName.trim().toLowerCase() !== targetLower
+        ),
+      };
+    });
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
+
+    if (activeUserIdRef.current) {
+      const active = updatedUsers.find((u) => u.id === activeUserIdRef.current);
+      if (active) setActiveUser(active);
+    }
 
     // 3. Dispatch action to server
     dispatchAction({

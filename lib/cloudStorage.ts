@@ -385,14 +385,21 @@ export function applyAction(
 // In-process serialization queue to prevent race conditions during concurrent serverless writes
 let writeQueue = Promise.resolve();
 
-export function queueAction(action: InventoryAction): Promise<CloudInventoryPayload> {
+export function queueActions(actions: InventoryAction[]): Promise<CloudInventoryPayload> {
   const operation = writeQueue.then(async () => {
     const current = await getCloudData();
-    const next = applyAction(current, action);
+    let next = current;
+    for (const action of actions) {
+      next = applyAction(next, action);
+    }
     await saveCloudData(next.users, next.catalog);
     return next;
   });
 
   writeQueue = operation.catch(() => {}).then(() => {});
   return operation;
+}
+
+export function queueAction(action: InventoryAction): Promise<CloudInventoryPayload> {
+  return queueActions([action]);
 }

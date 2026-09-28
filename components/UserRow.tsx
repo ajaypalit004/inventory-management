@@ -37,24 +37,26 @@ export const UserRow: React.FC<UserRowProps> = ({
         onClick={() => onSelectUser(user)}
         className="flex-1 flex flex-wrap items-center gap-2 min-w-0 py-1 cursor-pointer"
       >
-        {user.assignments.length === 0 ? (
+        {(!user?.assignments || user.assignments.length === 0) ? (
           <span className="text-xs text-slate-400 italic">
             No items assigned
           </span>
         ) : (
-          user.assignments.map((asg) => (
-            <span
-              key={asg.id}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs sm:text-sm font-medium text-slate-800 hover:border-blue-200 hover:bg-blue-50/40 transition-colors"
-            >
-              <span>{asg.itemName}</span>
-              {asg.quantity > 1 && (
-                <span className="text-[11px] px-1.5 py-0.2 rounded bg-blue-100 text-blue-700 font-bold">
-                  ×{asg.quantity}
-                </span>
-              )}
-            </span>
-          ))
+          (user.assignments || [])
+            .filter((asg) => asg && asg.itemName)
+            .map((asg) => (
+              <span
+                key={asg.id || `asg-${asg.itemName}`}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs sm:text-sm font-medium text-slate-800 hover:border-blue-200 hover:bg-blue-50/40 transition-colors"
+              >
+                <span>{asg.itemName}</span>
+                {(asg.quantity || 1) > 1 && (
+                  <span className="text-[11px] px-1.5 py-0.2 rounded bg-blue-100 text-blue-700 font-bold">
+                    ×{asg.quantity}
+                  </span>
+                )}
+              </span>
+            ))
         )}
       </div>
 

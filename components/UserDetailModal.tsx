@@ -36,12 +36,19 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
   const trimmedQuery = itemQuery.trim();
   const queryLower = trimmedQuery.toLowerCase();
 
+  const safeCatalog = Array.isArray(catalog)
+    ? catalog.filter((c) => c && typeof c.name === "string")
+    : [];
+  const safeAssignments = Array.isArray(user.assignments)
+    ? user.assignments.filter((a) => a && typeof a.itemName === "string")
+    : [];
+
   // Case-insensitive filtering of listed catalog items
-  const matchingCatalogItems = catalog.filter((c) =>
+  const matchingCatalogItems = safeCatalog.filter((c) =>
     c.name.trim().toLowerCase().includes(queryLower)
   );
 
-  const exactMatch = catalog.find(
+  const exactMatch = safeCatalog.find(
     (c) => c.name.trim().toLowerCase() === queryLower
   );
 
@@ -70,7 +77,7 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
           <div>
             <h2 className="text-lg font-bold leading-tight">{user.name}</h2>
             <p className="text-xs text-blue-100">
-              {user.assignments.length} assigned items
+              {safeAssignments.length} assigned items
             </p>
           </div>
 
@@ -179,15 +186,15 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
           )}
 
           {/* If search query is empty but catalog has items: Clean management chips */}
-          {!trimmedQuery && catalog.length > 0 && (
+          {!trimmedQuery && safeCatalog.length > 0 && (
             <div className="mt-2.5 pt-2 border-t border-slate-200/50">
               <div className="flex items-center justify-between text-[11px] font-medium text-slate-400 mb-1.5">
-                <span>Available listed items ({catalog.length}):</span>
+                <span>Available listed items ({safeCatalog.length}):</span>
               </div>
               <div className="flex flex-wrap gap-2 max-h-28 overflow-y-auto pt-0.5">
-                {catalog.map((item) => (
+                {safeCatalog.map((item) => (
                   <span
-                    key={item.id}
+                    key={item.id || `item-${item.name}`}
                     className="inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700"
                   >
                     <span className="font-medium mr-1">{item.name}</span>
@@ -216,7 +223,7 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
 
         {/* Linear List of Assigned Items with format: "+ quantity -" */}
         <div className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-2.5">
-          {user.assignments.length === 0 ? (
+          {safeAssignments.length === 0 ? (
             <div className="text-center py-10 px-4 text-slate-400">
               <Package className="w-10 h-10 text-slate-300 mx-auto mb-2" />
               <p className="text-sm font-medium text-slate-600">
@@ -227,9 +234,9 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
               </p>
             </div>
           ) : (
-            user.assignments.map((assignment) => (
+            safeAssignments.map((assignment) => (
               <div
-                key={assignment.id}
+                key={assignment.id || `assign-${assignment.itemName}`}
                 className="p-3 sm:p-3.5 rounded-xl border border-slate-200 bg-white hover:border-blue-200 transition-colors flex items-center justify-between gap-3 shadow-2xs"
               >
                 {/* Item Name */}

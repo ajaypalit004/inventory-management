@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getCloudData, queueAction, InventoryAction } from "@/lib/cloudStorage";
+import { getCloudData, queueAction, queueActions, InventoryAction } from "@/lib/cloudStorage";
 import { InventoryUser, CatalogItem } from "@/types/inventory";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +26,18 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
 
-    // 1. Explicit atomic action
+    // 1. Explicit atomic batch of actions
+    if (Array.isArray(body.actions) && body.actions.length > 0) {
+      const actions = body.actions as InventoryAction[];
+      const updated = await queueActions(actions);
+      return NextResponse.json(updated, {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+      });
+    }
+
+    // 2. Explicit single atomic action
     if (body.action && typeof body.action.type === "string") {
       const action = body.action as InventoryAction;
       const updated = await queueAction(action);
