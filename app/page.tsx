@@ -21,6 +21,9 @@ import {
 export default function HomePage() {
   const [users, setUsers] = useState<InventoryUser[]>(INITIAL_USERS);
   const [catalog, setCatalog] = useState<CatalogItem[]>(INITIAL_CATALOG);
+  const liveUsersRef = useRef<InventoryUser[]>(INITIAL_USERS);
+  const liveCatalogRef = useRef<CatalogItem[]>(INITIAL_CATALOG);
+
   const [isLoaded, setIsLoaded] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("synced");
 
@@ -91,10 +94,12 @@ export default function HomePage() {
         // Only update local state if no new local user actions are pending in the queue
         if (pendingActionsRef.current.length === 0) {
           if (Array.isArray(data.users)) {
+            liveUsersRef.current = data.users;
             setUsers(data.users);
             saveStoredUsers(data.users);
           }
           if (Array.isArray(data.catalog)) {
+            liveCatalogRef.current = data.catalog;
             setCatalog(data.catalog);
             saveStoredCatalog(data.catalog);
           }
@@ -142,23 +147,15 @@ export default function HomePage() {
 
       const data = await res.json();
       if (Array.isArray(data.users)) {
-        setUsers((currentUsers) => {
-          if (JSON.stringify(currentUsers) !== JSON.stringify(data.users)) {
-            saveStoredUsers(data.users);
-            return data.users;
-          }
-          return currentUsers;
-        });
+        liveUsersRef.current = data.users;
+        saveStoredUsers(data.users);
+        setUsers(data.users);
       }
 
       if (Array.isArray(data.catalog)) {
-        setCatalog((currentCatalog) => {
-          if (JSON.stringify(currentCatalog) !== JSON.stringify(data.catalog)) {
-            saveStoredCatalog(data.catalog);
-            return data.catalog;
-          }
-          return currentCatalog;
-        });
+        liveCatalogRef.current = data.catalog;
+        saveStoredCatalog(data.catalog);
+        setCatalog(data.catalog);
       }
 
       setSyncStatus("synced");
@@ -172,6 +169,8 @@ export default function HomePage() {
   useEffect(() => {
     const loadedUsers = getStoredUsers();
     const loadedCatalog = getStoredCatalog();
+    liveUsersRef.current = loadedUsers;
+    liveCatalogRef.current = loadedCatalog;
     setUsers(loadedUsers);
     setCatalog(loadedCatalog);
     setIsLoaded(true);
@@ -249,25 +248,29 @@ export default function HomePage() {
     const targetLower = trimmed.toLowerCase();
     lastLocalEditTimestamp.current = Date.now();
 
-    // 1. Optimistic Local Update
-    let updatedCatalog = catalog;
-    let catalogItem = catalog.find(
+    // 1. Synchronous Live Update from liveCatalogRef
+    const currentCatalog = liveCatalogRef.current;
+    let catalogItem = currentCatalog.find(
       (c) => c && c.name && c.name.trim().toLowerCase() === targetLower
     );
 
+    let updatedCatalog = currentCatalog;
     if (!catalogItem) {
       catalogItem = {
         id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         name: trimmed,
       };
-      updatedCatalog = [catalogItem, ...catalog];
+      updatedCatalog = [catalogItem, ...currentCatalog];
+      liveCatalogRef.current = updatedCatalog;
       setCatalog(updatedCatalog);
       saveStoredCatalog(updatedCatalog);
     }
 
     const generatedAssignmentId = `assign-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 
-    const updatedUsers = users.map((u) => {
+    // 2. Synchronous Live Update from liveUsersRef
+    const currentUsers = liveUsersRef.current;
+    const updatedUsers = currentUsers.map((u) => {
       if (u.id !== userId) return u;
 
       const currentAssignments = Array.isArray(u.assignments) ? u.assignments : [];
@@ -297,6 +300,7 @@ export default function HomePage() {
       };
     });
 
+    liveUsersRef.current = updatedUsers;
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
 
@@ -304,7 +308,7 @@ export default function HomePage() {
     const active = updatedUsers.find((u) => u.id === userId);
     if (active) setActiveUser(active);
 
-    // 2. Dispatch atomic action with identical ID and itemName
+    // 3. Dispatch atomic action with identical ID and itemName into the batch queue
     dispatchAction({
       type: "ASSIGN_ITEM",
       userId,
@@ -321,7 +325,8 @@ export default function HomePage() {
     lastLocalEditTimestamp.current = Date.now();
     const itemLower = assignment.itemName.trim().toLowerCase();
 
-    const updatedUsers = users.map((u) => {
+    const currentUsers = liveUsersRef.current;
+    const updatedUsers = currentUsers.map((u) => {
       if (u.id !== userId) return u;
       const currentAssignments = Array.isArray(u.assignments) ? u.assignments : [];
       return {
@@ -334,6 +339,7 @@ export default function HomePage() {
       };
     });
 
+    liveUsersRef.current = updatedUsers;
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
 
@@ -362,7 +368,8 @@ export default function HomePage() {
     lastLocalEditTimestamp.current = Date.now();
     const itemLower = assignment.itemName.trim().toLowerCase();
 
-    const updatedUsers = users.map((u) => {
+    const currentUsers = liveUsersRef.current;
+    const updatedUsers = currentUsers.map((u) => {
       if (u.id !== userId) return u;
       const currentAssignments = Array.isArray(u.assignments) ? u.assignments : [];
       return {
@@ -375,6 +382,7 @@ export default function HomePage() {
       };
     });
 
+    liveUsersRef.current = updatedUsers;
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
 
@@ -400,7 +408,8 @@ export default function HomePage() {
         lastLocalEditTimestamp.current = Date.now();
         const itemLower = assignment.itemName.trim().toLowerCase();
 
-        const updatedUsers = users.map((u) => {
+        const currentUsers = liveUsersRef.current;
+        const updatedUsers = currentUsers.map((u) => {
           if (u.id !== userId) return u;
           const currentAssignments = Array.isArray(u.assignments) ? u.assignments : [];
           return {
@@ -417,15 +426,17 @@ export default function HomePage() {
           return asgs.some((a) => a && a.itemName && a.itemName.trim().toLowerCase() === itemLower);
         });
 
-        let updatedCatalog = catalog;
+        let updatedCatalog = liveCatalogRef.current;
         if (!stillInUse) {
-          updatedCatalog = catalog.filter(
+          updatedCatalog = liveCatalogRef.current.filter(
             (c) => c && c.name && c.name.trim().toLowerCase() !== itemLower
           );
+          liveCatalogRef.current = updatedCatalog;
           setCatalog(updatedCatalog);
           saveStoredCatalog(updatedCatalog);
         }
 
+        liveUsersRef.current = updatedUsers;
         setUsers(updatedUsers);
         saveStoredUsers(updatedUsers);
 
@@ -452,14 +463,16 @@ export default function HomePage() {
     lastLocalEditTimestamp.current = Date.now();
 
     // 1. Immediately remove from catalog locally
-    const updatedCatalog = catalog.filter(
+    const updatedCatalog = liveCatalogRef.current.filter(
       (c) => c && c.name && c.name.trim().toLowerCase() !== targetLower
     );
+    liveCatalogRef.current = updatedCatalog;
     setCatalog(updatedCatalog);
     saveStoredCatalog(updatedCatalog);
 
     // 2. Also remove any lingering assignments of this item locally
-    const updatedUsers = users.map((u) => {
+    const currentUsers = liveUsersRef.current;
+    const updatedUsers = currentUsers.map((u) => {
       const currentAssignments = Array.isArray(u.assignments) ? u.assignments : [];
       return {
         ...u,
@@ -468,6 +481,7 @@ export default function HomePage() {
         ),
       };
     });
+    liveUsersRef.current = updatedUsers;
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
 
@@ -492,7 +506,9 @@ export default function HomePage() {
       title: "Delete User",
       message: `Are you sure you want to delete "${user.name}"? This will remove the user and all their assignments.`,
       onConfirm: () => {
-        const updatedUsers = users.filter((u) => u.id !== user.id);
+        const currentUsers = liveUsersRef.current;
+        const updatedUsers = currentUsers.filter((u) => u.id !== user.id);
+        liveUsersRef.current = updatedUsers;
         setUsers(updatedUsers);
         saveStoredUsers(updatedUsers);
 
@@ -516,7 +532,9 @@ export default function HomePage() {
       name: trimmedName,
       assignments: [],
     };
-    const updatedUsers = [newUser, ...users];
+    const currentUsers = liveUsersRef.current;
+    const updatedUsers = [newUser, ...currentUsers];
+    liveUsersRef.current = updatedUsers;
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
 
@@ -536,6 +554,8 @@ export default function HomePage() {
       message: "Reset all users and assignments to default state on all devices?",
       onConfirm: () => {
         const reset = resetAllData();
+        liveUsersRef.current = reset.users;
+        liveCatalogRef.current = reset.catalog;
         setUsers(reset.users);
         setCatalog(reset.catalog);
         setActiveUser(null);

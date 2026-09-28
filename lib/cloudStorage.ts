@@ -20,9 +20,16 @@ export type InventoryAction =
   | { type: "RESET" }
   | { type: "SYNC_MERGE"; users: InventoryUser[]; catalog: CatalogItem[] };
 
+let inMemoryLatest: CloudInventoryPayload | null = null;
+
+function extractTimestamp(pathname: string): number {
+  const match = pathname.match(/inventory-state-(\d+)/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
 export async function getCloudData(): Promise<CloudInventoryPayload> {
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    return {
+    return inMemoryLatest || {
       users: INITIAL_USERS,
       catalog: INITIAL_CATALOG,
       updatedAt: Date.now(),
@@ -30,9 +37,13 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
   }
 
   try {
-    const listResult = await list({ prefix: BLOB_PREFIX, limit: 10 });
+    const listResult = await list({ prefix: BLOB_PREFIX, limit: 20 });
 
     if (listResult.blobs.length === 0) {
+      if (inMemoryLatest) {
+        return inMemoryLatest;
+      }
+
       // Check for legacy inventory-data.json
       const legacyList = await list({ prefix: "inventory-data" });
       const legacyBlob = legacyList.blobs.find((b) => b.pathname === "inventory-data.json");
@@ -47,6 +58,7 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
                 Array.isArray(data.catalog) ? data.catalog : INITIAL_CATALOG
               );
               del(legacyBlob.url).catch(() => {});
+              inMemoryLatest = saved;
               return saved;
             }
           }
@@ -60,36 +72,41 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
         updatedAt: Date.now(),
       };
       await saveCloudData(initialPayload.users, initialPayload.catalog);
+      inMemoryLatest = initialPayload;
       return initialPayload;
     }
 
-    // Sort by uploadedAt descending to find true latest state
+    // Sort by precise millisecond timestamp embedded in the pathname
     const sorted = listResult.blobs.sort(
-      (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
+      (a, b) => extractTimestamp(b.pathname) - extractTimestamp(a.pathname)
     );
     const latestBlob = sorted[0];
 
     const response = await fetch(latestBlob.url, { cache: "no-store" });
     if (!response.ok) {
+      if (inMemoryLatest) return inMemoryLatest;
       throw new Error(`Failed to fetch blob: ${response.status}`);
     }
 
     const data = await response.json();
-
-    // Async prune older state blobs so store stays compact
-    if (sorted.length > 1) {
-      const oldUrls = sorted.slice(1).map((b) => b.url);
-      del(oldUrls).catch(() => {});
-    }
-
-    return {
+    const payload: CloudInventoryPayload = {
       users: Array.isArray(data.users) ? data.users : INITIAL_USERS,
       catalog: Array.isArray(data.catalog) ? data.catalog : INITIAL_CATALOG,
       updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : Date.now(),
     };
+
+    inMemoryLatest = payload;
+
+    // Prune only blobs beyond the top 5 newest versions so in-flight requests are never disrupted
+    if (sorted.length > 5) {
+      const staleUrls = sorted.slice(5).map((b) => b.url);
+      del(staleUrls).catch(() => {});
+    }
+
+    return payload;
   } catch (err) {
     console.error("Error reading cloud inventory data:", err);
-    return {
+    return inMemoryLatest || {
       users: INITIAL_USERS,
       catalog: INITIAL_CATALOG,
       updatedAt: Date.now(),
@@ -107,12 +124,14 @@ export async function saveCloudData(
     updatedAt: Date.now(),
   };
 
+  inMemoryLatest = payload;
+
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
     console.warn("BLOB_READ_WRITE_TOKEN is missing, skipping cloud write");
     return payload;
   }
 
-  // Versioned pathname guarantees every save has a unique URL, completely eliminating CDN caching
+  // Versioned pathname with millisecond timestamp guarantees uniqueness and order
   const newPathname = `${BLOB_PREFIX}${Date.now()}-${Math.random().toString(36).substring(2, 6)}.json`;
 
   await put(newPathname, JSON.stringify(payload), {
@@ -120,16 +139,6 @@ export async function saveCloudData(
     addRandomSuffix: false,
     contentType: "application/json",
   });
-
-  // Clean up any older state blobs asynchronously
-  list({ prefix: BLOB_PREFIX })
-    .then((res) => {
-      const olderBlobs = res.blobs.filter((b) => b.pathname !== newPathname);
-      if (olderBlobs.length > 0) {
-        del(olderBlobs.map((b) => b.url)).catch(() => {});
-      }
-    })
-    .catch(() => {});
 
   return payload;
 }
