@@ -13,6 +13,7 @@ interface UserDetailModalProps {
   onIncreaseQuantity: (userId: string, assignmentId: string) => void;
   onDecreaseQuantity: (userId: string, assignment: UserAssignment) => void;
   onRequestRemove: (userId: string, assignment: UserAssignment) => void;
+  onRequestDeleteUser: (user: InventoryUser) => void;
 }
 
 export const UserDetailModal: React.FC<UserDetailModalProps> = ({
@@ -24,6 +25,7 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
   onIncreaseQuantity,
   onDecreaseQuantity,
   onRequestRemove,
+  onRequestDeleteUser,
 }) => {
   const [itemQuery, setItemQuery] = useState("");
 
@@ -202,8 +204,17 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
           )}
         </div>
 
-        {/* Footer: Removed "Add Another Item" from bottom left, only Done button */}
-        <div className="p-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-end">
+        {/* Footer */}
+        <div className="p-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => onRequestDeleteUser(user)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-200"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Delete User</span>
+          </button>
+
           <button
             type="button"
             onClick={onClose}

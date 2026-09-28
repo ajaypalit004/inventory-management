@@ -241,6 +241,21 @@ export default function HomePage() {
     });
   };
 
+  // Delete User with in-website confirmation
+  const handleRequestDeleteUser = (user: InventoryUser) => {
+    setConfirmState({
+      isOpen: true,
+      title: "Delete User",
+      message: `Are you sure you want to delete "${user.name}"? This will remove the user and all their assignments.`,
+      onConfirm: () => {
+        setUsers((prev) => prev.filter((u) => u.id !== user.id));
+        setActiveUser(null);
+        setConfirmState((prev) => ({ ...prev, isOpen: false }));
+        showToast(`Deleted ${user.name}`);
+      },
+    });
+  };
+
   // Add User
   const handleAddUser = (newUserData: Omit<InventoryUser, "id" | "assignments">) => {
     const newUser: InventoryUser = {
@@ -340,15 +355,6 @@ export default function HomePage() {
         Inventory Desk • Minimal Blue &amp; White
       </footer>
 
-      {/* In-Website Confirmation Modal */}
-      <ConfirmModal
-        isOpen={confirmState.isOpen}
-        title={confirmState.title}
-        message={confirmState.message}
-        onConfirm={confirmState.onConfirm}
-        onCancel={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
-      />
-
       {/* User Detail / Manage Items Modal */}
       <UserDetailModal
         user={activeUser}
@@ -359,6 +365,7 @@ export default function HomePage() {
         onIncreaseQuantity={handleIncreaseQuantity}
         onDecreaseQuantity={handleDecreaseQuantity}
         onRequestRemove={handleRequestRemove}
+        onRequestDeleteUser={handleRequestDeleteUser}
       />
 
       {/* Add User Modal */}
@@ -366,6 +373,15 @@ export default function HomePage() {
         isOpen={isAddUserOpen}
         onClose={() => setIsAddUserOpen(false)}
         onAddUser={handleAddUser}
+      />
+
+      {/* In-Website Confirmation Modal */}
+      <ConfirmModal
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
       />
     </div>
   );
