@@ -94,8 +94,8 @@ export default function HomePage() {
 
   // Pull Cloud Data (Fetches additions/updates made from any other device)
   const pullCloudData = useCallback(async (silent = false) => {
-    // If local user just made an edit within 2 seconds, do not interrupt
-    if (Date.now() - lastLocalEditTimestamp.current < 2000) {
+    // If local user just made an edit within 4 seconds, do not interrupt
+    if (Date.now() - lastLocalEditTimestamp.current < 4000) {
       return;
     }
 
@@ -360,14 +360,26 @@ export default function HomePage() {
   const handleRemoveCatalogItem = (itemName: string) => {
     const trimmed = itemName.trim();
     const targetLower = trimmed.toLowerCase();
+    lastLocalEditTimestamp.current = Date.now();
 
+    // 1. Immediately remove from catalog locally
     const updatedCatalog = catalog.filter(
       (c) => c.name.trim().toLowerCase() !== targetLower
     );
-
     setCatalog(updatedCatalog);
     saveStoredCatalog(updatedCatalog);
 
+    // 2. Also remove any lingering assignments of this item locally
+    const updatedUsers = users.map((u) => ({
+      ...u,
+      assignments: u.assignments.filter(
+        (a) => a.itemName.trim().toLowerCase() !== targetLower
+      ),
+    }));
+    setUsers(updatedUsers);
+    saveStoredUsers(updatedUsers);
+
+    // 3. Dispatch action to server
     dispatchAction({
       type: "REMOVE_CATALOG_ITEM",
       itemName: trimmed,

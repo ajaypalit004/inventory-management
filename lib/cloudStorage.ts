@@ -1,4 +1,4 @@
-import { put, list } from "@vercel/blob";
+import { put, get } from "@vercel/blob";
 import { InventoryUser, CatalogItem, UserAssignment } from "@/types/inventory";
 import { INITIAL_USERS, INITIAL_CATALOG } from "@/lib/initialData";
 
@@ -30,9 +30,14 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
   }
 
   try {
-    const { blobs } = await list({ prefix: BLOB_PATH });
-    const target = blobs.find((b) => b.pathname === BLOB_PATH);
-    if (!target) {
+    // CRITICAL: useCache: false completely bypasses Vercel Blob's 5-minute Edge CDN cache,
+    // ensuring fresh data is retrieved from origin on every read.
+    const result = await get(BLOB_PATH, {
+      access: "public",
+      useCache: false,
+    });
+
+    if (!result) {
       const initialPayload: CloudInventoryPayload = {
         users: INITIAL_USERS,
         catalog: INITIAL_CATALOG,
@@ -42,15 +47,9 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
       return initialPayload;
     }
 
-    const response = await fetch(`${target.url}?t=${Date.now()}`, {
-      cache: "no-store",
-    });
+    const text = await new Response(result.stream).text();
+    const data = JSON.parse(text);
 
-    if (!response.ok) {
-      throw new Error(`Failed to fetch blob: ${response.status}`);
-    }
-
-    const data = await response.json();
     if (!Array.isArray(data.users)) {
       const initialPayload: CloudInventoryPayload = {
         users: INITIAL_USERS,
@@ -207,8 +206,16 @@ export function applyAction(
         (c) => c.name.trim().toLowerCase() !== targetLower
       );
 
+      // Also clean up any assignment of this removed item from any user
+      const updatedUsers = current.users.map((u) => ({
+        ...u,
+        assignments: u.assignments.filter(
+          (a) => a.itemName.trim().toLowerCase() !== targetLower
+        ),
+      }));
+
       return {
-        users: current.users,
+        users: updatedUsers,
         catalog: updatedCatalog,
         updatedAt: Date.now(),
       };
