@@ -20,6 +20,7 @@ import { UserDetailModal } from "@/components/UserDetailModal";
 import { CatalogModal } from "@/components/CatalogModal";
 import { AddUserModal } from "@/components/AddUserModal";
 import { CatalogItem, InventoryUser, ItemCategory } from "@/types/inventory";
+import { INITIAL_CATALOG, INITIAL_USERS } from "@/lib/initialData";
 import {
   getStoredUsers,
   saveStoredUsers,
@@ -29,8 +30,8 @@ import {
 } from "@/lib/storage";
 
 export default function HomePage() {
-  const [users, setUsers] = useState<InventoryUser[]>([]);
-  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [users, setUsers] = useState<InventoryUser[]>(INITIAL_USERS);
+  const [catalog, setCatalog] = useState<CatalogItem[]>(INITIAL_CATALOG);
   const [isLoaded, setIsLoaded] = useState(false);
 
   // Search & Filtering
