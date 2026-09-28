@@ -48,11 +48,13 @@ export default function HomePage() {
     isOpen: boolean;
     title: string;
     message: string;
+    confirmText?: string;
     onConfirm: () => void;
   }>({
     isOpen: false,
     title: "",
     message: "",
+    confirmText: "Confirm",
     onConfirm: () => {},
   });
 
@@ -458,6 +460,7 @@ export default function HomePage() {
       isOpen: true,
       title: "Remove Assignment",
       message: `Remove "${assignment.itemName}" from this user?`,
+      confirmText: "Remove",
       onConfirm: () => {
         lastLocalEditTimestamp.current = Date.now();
         const itemLower = assignment.itemName.trim().toLowerCase();
@@ -553,6 +556,7 @@ export default function HomePage() {
       isOpen: true,
       title: "Delete User",
       message: `Are you sure you want to delete "${user.name}"? This will remove the user and all their assignments.`,
+      confirmText: "Delete User",
       onConfirm: () => {
         const currentUsers = liveUsersRef.current;
         const updatedUsers = currentUsers.filter((u) => u.id !== user.id);
@@ -600,6 +604,7 @@ export default function HomePage() {
       isOpen: true,
       title: "Reset Inventory",
       message: "Reset all users and assignments to default state on all devices?",
+      confirmText: "Reset All",
       onConfirm: () => {
         const reset = resetAllData();
         liveUsersRef.current = reset.users;
@@ -718,6 +723,7 @@ export default function HomePage() {
         isOpen={confirmState.isOpen}
         title={confirmState.title}
         message={confirmState.message}
+        confirmText={confirmState.confirmText}
         onConfirm={confirmState.onConfirm}
         onCancel={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
       />
