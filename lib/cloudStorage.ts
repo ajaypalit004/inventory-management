@@ -1,8 +1,8 @@
-import { put, get } from "@vercel/blob";
+import { put, list, del } from "@vercel/blob";
 import { InventoryUser, CatalogItem, UserAssignment } from "@/types/inventory";
 import { INITIAL_USERS, INITIAL_CATALOG } from "@/lib/initialData";
 
-const BLOB_PATH = "inventory-data.json";
+const BLOB_PREFIX = "inventory-state-";
 
 export interface CloudInventoryPayload {
   users: InventoryUser[];
@@ -30,12 +30,30 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
   }
 
   try {
-    const result = await get(BLOB_PATH, {
-      access: "public",
-      useCache: false, // Bypasses Vercel Edge CDN cache completely
-    });
+    const listResult = await list({ prefix: BLOB_PREFIX, limit: 10 });
 
-    if (!result) {
+    if (listResult.blobs.length === 0) {
+      // Check for legacy inventory-data.json
+      const legacyList = await list({ prefix: "inventory-data" });
+      const legacyBlob = legacyList.blobs.find((b) => b.pathname === "inventory-data.json");
+      if (legacyBlob) {
+        try {
+          const res = await fetch(legacyBlob.url, { cache: "no-store" });
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.users)) {
+              const saved = await saveCloudData(
+                data.users,
+                Array.isArray(data.catalog) ? data.catalog : INITIAL_CATALOG
+              );
+              del(legacyBlob.url).catch(() => {});
+              return saved;
+            }
+          }
+        } catch {}
+      }
+
+      // No existing blobs, initialize with default state
       const initialPayload: CloudInventoryPayload = {
         users: INITIAL_USERS,
         catalog: INITIAL_CATALOG,
@@ -45,21 +63,27 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
       return initialPayload;
     }
 
-    const text = await new Response(result.stream).text();
-    const data = JSON.parse(text);
+    // Sort by uploadedAt descending to find true latest state
+    const sorted = listResult.blobs.sort(
+      (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
+    );
+    const latestBlob = sorted[0];
 
-    if (!Array.isArray(data.users)) {
-      const initialPayload: CloudInventoryPayload = {
-        users: INITIAL_USERS,
-        catalog: INITIAL_CATALOG,
-        updatedAt: Date.now(),
-      };
-      await saveCloudData(initialPayload.users, initialPayload.catalog);
-      return initialPayload;
+    const response = await fetch(latestBlob.url, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch blob: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Async prune older state blobs so store stays compact
+    if (sorted.length > 1) {
+      const oldUrls = sorted.slice(1).map((b) => b.url);
+      del(oldUrls).catch(() => {});
     }
 
     return {
-      users: data.users,
+      users: Array.isArray(data.users) ? data.users : INITIAL_USERS,
       catalog: Array.isArray(data.catalog) ? data.catalog : INITIAL_CATALOG,
       updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : Date.now(),
     };
@@ -88,13 +112,24 @@ export async function saveCloudData(
     return payload;
   }
 
-  await put(BLOB_PATH, JSON.stringify(payload), {
+  // Versioned pathname guarantees every save has a unique URL, completely eliminating CDN caching
+  const newPathname = `${BLOB_PREFIX}${Date.now()}-${Math.random().toString(36).substring(2, 6)}.json`;
+
+  await put(newPathname, JSON.stringify(payload), {
     access: "public",
     addRandomSuffix: false,
-    allowOverwrite: true,
     contentType: "application/json",
-    cacheControlMaxAge: 0,
   });
+
+  // Clean up any older state blobs asynchronously
+  list({ prefix: BLOB_PREFIX })
+    .then((res) => {
+      const olderBlobs = res.blobs.filter((b) => b.pathname !== newPathname);
+      if (olderBlobs.length > 0) {
+        del(olderBlobs.map((b) => b.url)).catch(() => {});
+      }
+    })
+    .catch(() => {});
 
   return payload;
 }
@@ -262,9 +297,17 @@ export function applyAction(
     case "DELETE_USER": {
       const updatedUsers = current.users.filter((u) => u.id !== action.userId);
 
+      // Clean up any catalog items that are no longer assigned to any user
+      const updatedCatalog = current.catalog.filter((c) => {
+        const catLower = c.name.trim().toLowerCase();
+        return updatedUsers.some((u) =>
+          u.assignments.some((a) => a.itemName.trim().toLowerCase() === catLower)
+        );
+      });
+
       return {
         users: updatedUsers,
-        catalog: current.catalog,
+        catalog: updatedCatalog,
         updatedAt: Date.now(),
       };
     }
