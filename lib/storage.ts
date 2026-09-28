@@ -1,14 +1,33 @@
 import { CatalogItem, InventoryUser } from "@/types/inventory";
 import { INITIAL_CATALOG, INITIAL_USERS } from "./initialData";
 
-const USERS_STORAGE_KEY = "inventory_users_v4";
-const CATALOG_STORAGE_KEY = "inventory_catalog_v4";
+const USERS_STORAGE_KEY = "inventory_users_v5";
+const CATALOG_STORAGE_KEY = "inventory_catalog_v5";
 
 export function getStoredUsers(): InventoryUser[] {
   if (typeof window === "undefined") return INITIAL_USERS;
   try {
     const raw = localStorage.getItem(USERS_STORAGE_KEY);
     if (!raw) {
+      // Check previous storage version to migrate any existing assignments for the 19 users
+      const oldRaw = localStorage.getItem("inventory_users_v4");
+      if (oldRaw) {
+        try {
+          const oldUsers: InventoryUser[] = JSON.parse(oldRaw);
+          const migratedUsers = INITIAL_USERS.map((newUser) => {
+            const match = oldUsers.find(
+              (ou) => ou.name.toLowerCase().trim() === newUser.name.toLowerCase().trim()
+            );
+            return match && match.assignments && match.assignments.length > 0
+              ? { ...newUser, assignments: match.assignments }
+              : newUser;
+          });
+          localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(migratedUsers));
+          return migratedUsers;
+        } catch {
+          // fallback to INITIAL_USERS
+        }
+      }
       localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(INITIAL_USERS));
       return INITIAL_USERS;
     }
@@ -33,6 +52,14 @@ export function getStoredCatalog(): CatalogItem[] {
   try {
     const raw = localStorage.getItem(CATALOG_STORAGE_KEY);
     if (!raw) {
+      const oldRaw = localStorage.getItem("inventory_catalog_v4");
+      if (oldRaw) {
+        try {
+          const oldCatalog = JSON.parse(oldRaw);
+          localStorage.setItem(CATALOG_STORAGE_KEY, JSON.stringify(oldCatalog));
+          return oldCatalog;
+        } catch {}
+      }
       localStorage.setItem(CATALOG_STORAGE_KEY, JSON.stringify(INITIAL_CATALOG));
       return INITIAL_CATALOG;
     }
