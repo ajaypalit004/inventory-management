@@ -210,11 +210,13 @@ export default function HomePage() {
   const handleAssignItem = (userId: string, itemName: string) => {
     const trimmed = itemName.trim();
     if (!trimmed) return;
+    const targetLower = trimmed.toLowerCase();
+    lastLocalEditTimestamp.current = Date.now();
 
     // 1. Optimistic Local Update
     let updatedCatalog = catalog;
     let catalogItem = catalog.find(
-      (c) => c.name.trim().toLowerCase() === trimmed.toLowerCase()
+      (c) => c.name.trim().toLowerCase() === targetLower
     );
 
     if (!catalogItem) {
@@ -227,11 +229,13 @@ export default function HomePage() {
       saveStoredCatalog(updatedCatalog);
     }
 
+    const generatedAssignmentId = `assign-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+
     const updatedUsers = users.map((u) => {
       if (u.id !== userId) return u;
 
       const existingIndex = u.assignments.findIndex(
-        (a) => a.itemName.trim().toLowerCase() === trimmed.toLowerCase()
+        (a) => a.itemName.trim().toLowerCase() === targetLower
       );
 
       if (existingIndex > -1) {
@@ -244,7 +248,7 @@ export default function HomePage() {
       }
 
       const newAssignment: UserAssignment = {
-        id: `assign-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        id: generatedAssignmentId,
         itemId: catalogItem!.id,
         itemName: catalogItem!.name,
         quantity: 1,
@@ -259,25 +263,31 @@ export default function HomePage() {
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
 
-    // 2. Dispatch atomic action immediately
+    // 2. Dispatch atomic action with identical ID and itemName
     dispatchAction({
       type: "ASSIGN_ITEM",
       userId,
       itemName: trimmed,
       quantity: 1,
+      assignmentId: generatedAssignmentId,
     });
 
     showToast(`Assigned ${catalogItem.name}`);
   };
 
   // Increase quantity
-  const handleIncreaseQuantity = (userId: string, assignmentId: string) => {
+  const handleIncreaseQuantity = (userId: string, assignment: UserAssignment) => {
+    lastLocalEditTimestamp.current = Date.now();
+    const itemLower = assignment.itemName.trim().toLowerCase();
+
     const updatedUsers = users.map((u) => {
       if (u.id !== userId) return u;
       return {
         ...u,
         assignments: u.assignments.map((a) =>
-          a.id === assignmentId ? { ...a, quantity: (a.quantity || 1) + 1 } : a
+          a.id === assignment.id || a.itemName.trim().toLowerCase() === itemLower
+            ? { ...a, quantity: (a.quantity || 1) + 1 }
+            : a
         ),
       };
     });
@@ -288,7 +298,8 @@ export default function HomePage() {
     dispatchAction({
       type: "UPDATE_QUANTITY",
       userId,
-      assignmentId,
+      assignmentId: assignment.id,
+      itemName: assignment.itemName,
       delta: 1,
     });
   };
@@ -303,12 +314,15 @@ export default function HomePage() {
       return;
     }
 
+    lastLocalEditTimestamp.current = Date.now();
+    const itemLower = assignment.itemName.trim().toLowerCase();
+
     const updatedUsers = users.map((u) => {
       if (u.id !== userId) return u;
       return {
         ...u,
         assignments: u.assignments.map((a) =>
-          a.id === assignment.id
+          a.id === assignment.id || a.itemName.trim().toLowerCase() === itemLower
             ? { ...a, quantity: Math.max(1, (a.quantity || 1) - 1) }
             : a
         ),
@@ -322,6 +336,7 @@ export default function HomePage() {
       type: "UPDATE_QUANTITY",
       userId,
       assignmentId: assignment.id,
+      itemName: assignment.itemName,
       delta: -1,
     });
   };
@@ -333,13 +348,32 @@ export default function HomePage() {
       title: "Remove Assignment",
       message: `Remove "${assignment.itemName}" from this user?`,
       onConfirm: () => {
+        lastLocalEditTimestamp.current = Date.now();
+        const itemLower = assignment.itemName.trim().toLowerCase();
+
         const updatedUsers = users.map((u) => {
           if (u.id !== userId) return u;
           return {
             ...u,
-            assignments: u.assignments.filter((a) => a.id !== assignment.id),
+            assignments: u.assignments.filter(
+              (a) => a.id !== assignment.id && a.itemName.trim().toLowerCase() !== itemLower
+            ),
           };
         });
+
+        // If no user has this item assigned anymore, remove it from catalog suggestions
+        const stillInUse = updatedUsers.some((u) =>
+          u.assignments.some((a) => a.itemName.trim().toLowerCase() === itemLower)
+        );
+
+        let updatedCatalog = catalog;
+        if (!stillInUse) {
+          updatedCatalog = catalog.filter(
+            (c) => c.name.trim().toLowerCase() !== itemLower
+          );
+          setCatalog(updatedCatalog);
+          saveStoredCatalog(updatedCatalog);
+        }
 
         setUsers(updatedUsers);
         saveStoredUsers(updatedUsers);
@@ -348,6 +382,7 @@ export default function HomePage() {
           type: "REMOVE_ASSIGNMENT",
           userId,
           assignmentId: assignment.id,
+          itemName: assignment.itemName,
         });
 
         setConfirmState((prev) => ({ ...prev, isOpen: false }));

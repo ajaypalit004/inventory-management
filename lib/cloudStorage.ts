@@ -11,9 +11,9 @@ export interface CloudInventoryPayload {
 }
 
 export type InventoryAction =
-  | { type: "ASSIGN_ITEM"; userId: string; itemName: string; quantity?: number }
-  | { type: "UPDATE_QUANTITY"; userId: string; assignmentId: string; delta: number }
-  | { type: "REMOVE_ASSIGNMENT"; userId: string; assignmentId: string }
+  | { type: "ASSIGN_ITEM"; userId: string; itemName: string; quantity?: number; assignmentId?: string }
+  | { type: "UPDATE_QUANTITY"; userId: string; assignmentId?: string; itemName?: string; delta: number }
+  | { type: "REMOVE_ASSIGNMENT"; userId: string; assignmentId?: string; itemName?: string }
   | { type: "REMOVE_CATALOG_ITEM"; itemName: string }
   | { type: "ADD_USER"; name: string }
   | { type: "DELETE_USER"; userId: string }
@@ -30,11 +30,9 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
   }
 
   try {
-    // CRITICAL: useCache: false completely bypasses Vercel Blob's 5-minute Edge CDN cache,
-    // ensuring fresh data is retrieved from origin on every read.
     const result = await get(BLOB_PATH, {
       access: "public",
-      useCache: false,
+      useCache: false, // Bypasses Vercel Edge CDN cache completely
     });
 
     if (!result) {
@@ -109,10 +107,11 @@ export function applyAction(
     case "ASSIGN_ITEM": {
       const trimmedName = action.itemName.trim();
       if (!trimmedName) return current;
+      const targetLower = trimmedName.toLowerCase();
 
       // 1. Case-insensitive Catalog resolution
       let existingCat = current.catalog.find(
-        (c) => c.name.trim().toLowerCase() === trimmedName.toLowerCase()
+        (c) => c.name.trim().toLowerCase() === targetLower
       );
       let updatedCatalog = current.catalog;
       if (!existingCat) {
@@ -128,7 +127,7 @@ export function applyAction(
         if (u.id !== action.userId) return u;
 
         const existingAssignIndex = u.assignments.findIndex(
-          (a) => a.itemName.trim().toLowerCase() === trimmedName.toLowerCase()
+          (a) => a.itemName.trim().toLowerCase() === targetLower
         );
 
         if (existingAssignIndex > -1) {
@@ -142,7 +141,7 @@ export function applyAction(
         }
 
         const newAssignment: UserAssignment = {
-          id: `assign-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          id: action.assignmentId || `assign-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
           itemId: existingCat.id,
           itemName: existingCat.name,
           quantity: action.quantity || 1,
@@ -162,12 +161,17 @@ export function applyAction(
     }
 
     case "UPDATE_QUANTITY": {
+      const targetNameLower = action.itemName ? action.itemName.trim().toLowerCase() : null;
       const updatedUsers = current.users.map((u) => {
         if (u.id !== action.userId) return u;
 
         const nextAssignments = u.assignments
           .map((a) => {
-            if (a.id !== action.assignmentId) return a;
+            const matches =
+              (action.assignmentId && a.id === action.assignmentId) ||
+              (targetNameLower && a.itemName.trim().toLowerCase() === targetNameLower);
+
+            if (!matches) return a;
             const newQty = (a.quantity || 1) + action.delta;
             return newQty > 0 ? { ...a, quantity: newQty } : null;
           })
@@ -184,29 +188,46 @@ export function applyAction(
     }
 
     case "REMOVE_ASSIGNMENT": {
+      const targetNameLower = action.itemName ? action.itemName.trim().toLowerCase() : null;
       const updatedUsers = current.users.map((u) => {
         if (u.id !== action.userId) return u;
         return {
           ...u,
-          assignments: u.assignments.filter((a) => a.id !== action.assignmentId),
+          assignments: u.assignments.filter((a) => {
+            if (action.assignmentId && a.id === action.assignmentId) return false;
+            if (targetNameLower && a.itemName.trim().toLowerCase() === targetNameLower) return false;
+            return true;
+          }),
         };
       });
 
+      // If item is no longer assigned to ANY user, remove from catalog so suggestions stay clean
+      let updatedCatalog = current.catalog;
+      if (targetNameLower) {
+        const stillInUse = updatedUsers.some((u) =>
+          u.assignments.some((a) => a.itemName.trim().toLowerCase() === targetNameLower)
+        );
+        if (!stillInUse) {
+          updatedCatalog = current.catalog.filter(
+            (c) => c.name.trim().toLowerCase() !== targetNameLower
+          );
+        }
+      }
+
       return {
         users: updatedUsers,
-        catalog: current.catalog,
+        catalog: updatedCatalog,
         updatedAt: Date.now(),
       };
     }
 
     case "REMOVE_CATALOG_ITEM": {
       const targetLower = action.itemName.trim().toLowerCase();
-      // Remove item from catalog so it is never recalled or suggested again
+      // Remove item completely from catalog AND all assignments
       const updatedCatalog = current.catalog.filter(
         (c) => c.name.trim().toLowerCase() !== targetLower
       );
 
-      // Also clean up any assignment of this removed item from any user
       const updatedUsers = current.users.map((u) => ({
         ...u,
         assignments: u.assignments.filter(
@@ -257,8 +278,6 @@ export function applyAction(
     }
 
     case "SYNC_MERGE": {
-      // Non-destructive merge:
-      // Preserves all server assignments and merges client additions
       const mergedUsers = current.users.map((serverUser) => {
         const clientUser = action.users.find(
           (cu) =>
@@ -290,7 +309,6 @@ export function applyAction(
         };
       });
 
-      // Include new users added by client
       const serverNames = new Set(
         current.users.map((u) => u.name.trim().toLowerCase())
       );
@@ -298,7 +316,6 @@ export function applyAction(
         (cu) => !serverNames.has(cu.name.trim().toLowerCase())
       );
 
-      // Merge catalog case-insensitively
       const catalogMap = new Map<string, CatalogItem>();
       for (const c of current.catalog) {
         catalogMap.set(c.name.trim().toLowerCase(), c);
