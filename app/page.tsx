@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { Search, X, AlertCircle, CheckCircle2 } from "lucide-react";
-import { Navbar } from "@/components/Navbar";
+import { Navbar, SyncStatus } from "@/components/Navbar";
 import { UserRow } from "@/components/UserRow";
 import { UserDetailModal } from "@/components/UserDetailModal";
 import { AddUserModal } from "@/components/AddUserModal";
@@ -21,6 +21,7 @@ export default function HomePage() {
   const [users, setUsers] = useState<InventoryUser[]>(INITIAL_USERS);
   const [catalog, setCatalog] = useState<CatalogItem[]>(INITIAL_CATALOG);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("synced");
 
   // Search Bar (No filters)
   const [searchQuery, setSearchQuery] = useState("");
@@ -52,37 +53,139 @@ export default function HomePage() {
     }, 3000);
   };
 
-  // Load from localStorage
+  // Tracking refs for multi-device sync
+  const lastLocalEditTimestamp = useRef<number>(0);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isCloudInitialized = useRef<boolean>(false);
+  const activeUserIdRef = useRef<string | null>(null);
+  activeUserIdRef.current = activeUser ? activeUser.id : null;
+
+  // Cloud Save Helper (Debounced)
+  const scheduleCloudSync = useCallback(
+    (newUsers: InventoryUser[], newCatalog: CatalogItem[]) => {
+      lastLocalEditTimestamp.current = Date.now();
+      setSyncStatus("syncing");
+
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+
+      saveTimeoutRef.current = setTimeout(async () => {
+        try {
+          const res = await fetch("/api/inventory", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ users: newUsers, catalog: newCatalog }),
+          });
+          if (!res.ok) {
+            throw new Error(`Cloud save failed: ${res.status}`);
+          }
+          setSyncStatus("synced");
+        } catch (err) {
+          console.error("Cloud synchronization error:", err);
+          setSyncStatus("error");
+        }
+      }, 500);
+    },
+    []
+  );
+
+  // Cloud Fetch Helper (Pulls updates made from any other device)
+  const pullCloudData = useCallback(async (silent = false) => {
+    // If the user has made an edit in the last 2 seconds, avoid overwriting
+    if (Date.now() - lastLocalEditTimestamp.current < 2500) {
+      return;
+    }
+
+    if (!silent) setSyncStatus("syncing");
+
+    try {
+      const res = await fetch(`/api/inventory?t=${Date.now()}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) throw new Error(`Status ${res.status}`);
+
+      const data = await res.json();
+      if (Array.isArray(data.users)) {
+        setUsers((currentUsers) => {
+          // Compare JSON to avoid re-rendering if identical
+          if (JSON.stringify(currentUsers) !== JSON.stringify(data.users)) {
+            saveStoredUsers(data.users);
+            return data.users;
+          }
+          return currentUsers;
+        });
+      }
+
+      if (Array.isArray(data.catalog)) {
+        setCatalog((currentCatalog) => {
+          if (JSON.stringify(currentCatalog) !== JSON.stringify(data.catalog)) {
+            saveStoredCatalog(data.catalog);
+            return data.catalog;
+          }
+          return currentCatalog;
+        });
+      }
+
+      setSyncStatus("synced");
+    } catch (err) {
+      console.warn("Could not sync with cloud server:", err);
+      if (!silent) setSyncStatus("offline");
+    }
+  }, []);
+
+  // 1. Initial Load: Load fast from local cache first, then sync immediately with cloud
   useEffect(() => {
     const loadedUsers = getStoredUsers();
     const loadedCatalog = getStoredCatalog();
     setUsers(loadedUsers);
     setCatalog(loadedCatalog);
     setIsLoaded(true);
-  }, []);
 
-  // Save changes
-  useEffect(() => {
-    if (isLoaded) {
-      saveStoredUsers(users);
-    }
-  }, [users, isLoaded]);
+    // Initial cloud fetch
+    pullCloudData(false).then(() => {
+      isCloudInitialized.current = true;
+    });
+  }, [pullCloudData]);
 
+  // 2. Multi-device live sync: periodic polling every 5 seconds + on window focus/tab change
   useEffect(() => {
-    if (isLoaded) {
-      saveStoredCatalog(catalog);
-    }
-  }, [catalog, isLoaded]);
+    const handleFocus = () => {
+      pullCloudData(true);
+    };
 
-  // Keep activeUser synced with latest user data
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        pullCloudData(true);
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    // Light periodic polling to keep all open devices in sync automatically
+    const pollInterval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        pullCloudData(true);
+      }
+    }, 5000);
+
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      clearInterval(pollInterval);
+    };
+  }, [pullCloudData]);
+
+  // Keep activeUser synced with latest user data (including when multi-device update arrives)
   useEffect(() => {
-    if (activeUser) {
-      const updated = users.find((u) => u.id === activeUser.id);
+    if (activeUserIdRef.current) {
+      const updated = users.find((u) => u.id === activeUserIdRef.current);
       if (updated) {
         setActiveUser(updated);
       }
     }
-  }, [users, activeUser]);
+  }, [users]);
 
   // Instant Search by user name or assigned item name
   const filteredUsers = useMemo(() => {
@@ -111,7 +214,7 @@ export default function HomePage() {
     const trimmed = itemName.trim();
     if (!trimmed) return;
 
-    // Check if item exists in catalog, otherwise add it
+    let updatedCatalog = catalog;
     let catalogItem = catalog.find(
       (c) => c.name.toLowerCase() === trimmed.toLowerCase()
     );
@@ -121,120 +224,108 @@ export default function HomePage() {
         id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 3)}`,
         name: trimmed,
       };
-      setCatalog((prev) => [catalogItem!, ...prev]);
+      updatedCatalog = [catalogItem, ...catalog];
+      setCatalog(updatedCatalog);
+      saveStoredCatalog(updatedCatalog);
     }
 
-    setUsers((prevUsers) =>
-      prevUsers.map((u) => {
-        if (u.id !== userId) return u;
+    const updatedUsers = users.map((u) => {
+      if (u.id !== userId) return u;
 
-        // Check if user already has this item -> increment quantity
-        const existingAssignment = u.assignments.find(
-          (a) => a.itemName.toLowerCase() === trimmed.toLowerCase()
-        );
+      const existingIndex = u.assignments.findIndex(
+        (a) => a.itemName.toLowerCase() === trimmed.toLowerCase()
+      );
 
-        if (existingAssignment) {
-          return {
-            ...u,
-            assignments: u.assignments.map((a) =>
-              a.id === existingAssignment.id
-                ? { ...a, quantity: (a.quantity || 1) + 1 }
-                : a
-            ),
-          };
-        }
-
-        const newAssignment: UserAssignment = {
-          id: `asg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          itemId: catalogItem!.id,
-          itemName: catalogItem!.name,
-          quantity: 1,
+      if (existingIndex > -1) {
+        const nextAssignments = [...u.assignments];
+        nextAssignments[existingIndex] = {
+          ...nextAssignments[existingIndex],
+          quantity: (nextAssignments[existingIndex].quantity || 1) + 1,
         };
+        return { ...u, assignments: nextAssignments };
+      }
 
-        return {
-          ...u,
-          assignments: [...u.assignments, newAssignment],
-        };
-      })
-    );
+      const newAssignment: UserAssignment = {
+        id: `assign-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        itemId: catalogItem!.id,
+        itemName: catalogItem!.name,
+        quantity: 1,
+      };
 
-    const targetUser = users.find((u) => u.id === userId);
-    showToast(`Added ${catalogItem.name} to ${targetUser?.name || "user"}`);
+      return {
+        ...u,
+        assignments: [newAssignment, ...u.assignments],
+      };
+    });
+
+    setUsers(updatedUsers);
+    saveStoredUsers(updatedUsers);
+    scheduleCloudSync(updatedUsers, updatedCatalog);
+    showToast(`Assigned ${catalogItem.name}`);
   };
 
-  // Increase Quantity (+)
+  // Increase quantity
   const handleIncreaseQuantity = (userId: string, assignmentId: string) => {
-    setUsers((prev) =>
-      prev.map((u) => {
-        if (u.id !== userId) return u;
-        return {
-          ...u,
-          assignments: u.assignments.map((a) =>
-            a.id === assignmentId ? { ...a, quantity: (a.quantity || 1) + 1 } : a
-          ),
-        };
-      })
-    );
+    const updatedUsers = users.map((u) => {
+      if (u.id !== userId) return u;
+      return {
+        ...u,
+        assignments: u.assignments.map((a) =>
+          a.id === assignmentId ? { ...a, quantity: (a.quantity || 1) + 1 } : a
+        ),
+      };
+    });
+
+    setUsers(updatedUsers);
+    saveStoredUsers(updatedUsers);
+    scheduleCloudSync(updatedUsers, catalog);
   };
 
-  // Decrease Quantity (-)
+  // Decrease quantity
   const handleDecreaseQuantity = (
     userId: string,
     assignment: UserAssignment
   ) => {
-    if (assignment.quantity > 1) {
-      setUsers((prev) =>
-        prev.map((u) => {
+    if ((assignment.quantity || 1) <= 1) {
+      handleRequestRemove(userId, assignment);
+      return;
+    }
+
+    const updatedUsers = users.map((u) => {
+      if (u.id !== userId) return u;
+      return {
+        ...u,
+        assignments: u.assignments.map((a) =>
+          a.id === assignment.id
+            ? { ...a, quantity: Math.max(1, (a.quantity || 1) - 1) }
+            : a
+        ),
+      };
+    });
+
+    setUsers(updatedUsers);
+    saveStoredUsers(updatedUsers);
+    scheduleCloudSync(updatedUsers, catalog);
+  };
+
+  // Remove assignment with in-website confirmation modal
+  const handleRequestRemove = (userId: string, assignment: UserAssignment) => {
+    setConfirmState({
+      isOpen: true,
+      title: "Remove Assignment",
+      message: `Remove "${assignment.itemName}" from this user?`,
+      onConfirm: () => {
+        const updatedUsers = users.map((u) => {
           if (u.id !== userId) return u;
           return {
             ...u,
-            assignments: u.assignments.map((a) =>
-              a.id === assignment.id ? { ...a, quantity: a.quantity - 1 } : a
-            ),
+            assignments: u.assignments.filter((a) => a.id !== assignment.id),
           };
-        })
-      );
-    } else {
-      // Quantity is 1 -> show in-website popup modal to confirm removal
-      const targetUser = users.find((u) => u.id === userId);
-      setConfirmState({
-        isOpen: true,
-        title: "Remove Item",
-        message: `Remove "${assignment.itemName}" from ${targetUser?.name || "user"}?`,
-        onConfirm: () => {
-          setUsers((prev) =>
-            prev.map((u) => {
-              if (u.id !== userId) return u;
-              return {
-                ...u,
-                assignments: u.assignments.filter((a) => a.id !== assignment.id),
-              };
-            })
-          );
-          setConfirmState((prev) => ({ ...prev, isOpen: false }));
-          showToast(`Removed ${assignment.itemName}`);
-        },
-      });
-    }
-  };
+        });
 
-  // Request full remove via trash icon with in-website confirmation
-  const handleRequestRemove = (userId: string, assignment: UserAssignment) => {
-    const targetUser = users.find((u) => u.id === userId);
-    setConfirmState({
-      isOpen: true,
-      title: "Remove Item",
-      message: `Remove "${assignment.itemName}" from ${targetUser?.name || "user"}?`,
-      onConfirm: () => {
-        setUsers((prev) =>
-          prev.map((u) => {
-            if (u.id !== userId) return u;
-            return {
-              ...u,
-              assignments: u.assignments.filter((a) => a.id !== assignment.id),
-            };
-          })
-        );
+        setUsers(updatedUsers);
+        saveStoredUsers(updatedUsers);
+        scheduleCloudSync(updatedUsers, catalog);
         setConfirmState((prev) => ({ ...prev, isOpen: false }));
         showToast(`Removed ${assignment.itemName}`);
       },
@@ -248,7 +339,10 @@ export default function HomePage() {
       title: "Delete User",
       message: `Are you sure you want to delete "${user.name}"? This will remove the user and all their assignments.`,
       onConfirm: () => {
-        setUsers((prev) => prev.filter((u) => u.id !== user.id));
+        const updatedUsers = users.filter((u) => u.id !== user.id);
+        setUsers(updatedUsers);
+        saveStoredUsers(updatedUsers);
+        scheduleCloudSync(updatedUsers, catalog);
         setActiveUser(null);
         setConfirmState((prev) => ({ ...prev, isOpen: false }));
         showToast(`Deleted ${user.name}`);
@@ -263,7 +357,10 @@ export default function HomePage() {
       id: `user-${Date.now()}`,
       assignments: [],
     };
-    setUsers((prev) => [newUser, ...prev]);
+    const updatedUsers = [newUser, ...users];
+    setUsers(updatedUsers);
+    saveStoredUsers(updatedUsers);
+    scheduleCloudSync(updatedUsers, catalog);
     showToast(`Added ${newUser.name}`);
   };
 
@@ -272,12 +369,13 @@ export default function HomePage() {
     setConfirmState({
       isOpen: true,
       title: "Reset Inventory",
-      message: "Reset all users and assignments to default state?",
+      message: "Reset all users and assignments to default state on all devices?",
       onConfirm: () => {
         const reset = resetAllData();
         setUsers(reset.users);
         setCatalog(reset.catalog);
         setActiveUser(null);
+        scheduleCloudSync(reset.users, reset.catalog);
         setConfirmState((prev) => ({ ...prev, isOpen: false }));
         showToast("Reset to default data");
       },
@@ -300,8 +398,13 @@ export default function HomePage() {
       <Navbar
         userCount={users.length}
         totalAssigned={totalAssignedCount}
+        syncStatus={syncStatus}
         onOpenAddUser={() => setIsAddUserOpen(true)}
         onResetData={handleRequestReset}
+        onManualRefresh={() => {
+          pullCloudData(false);
+          showToast("Syncing latest data...");
+        }}
       />
 
       {/* Main Content Area */}
@@ -352,7 +455,7 @@ export default function HomePage() {
 
       {/* Footer */}
       <footer className="mt-auto border-t border-slate-200 bg-white py-4 text-center text-xs text-slate-400">
-        Inventory Desk • Minimal Blue &amp; White
+        Inventory Desk • Cloud Synced on All Devices • Minimal Blue &amp; White
       </footer>
 
       {/* User Detail / Manage Items Modal */}
