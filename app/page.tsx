@@ -1,10 +1,9 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { Search, X, Package, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Search, X, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { UserRow } from "@/components/UserRow";
-import { AssignItemModal } from "@/components/AssignItemModal";
 import { UserDetailModal } from "@/components/UserDetailModal";
 import { AddUserModal } from "@/components/AddUserModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
@@ -26,12 +25,11 @@ export default function HomePage() {
   // Search Bar (No filters)
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Modals state
-  const [detailUser, setDetailUser] = useState<InventoryUser | null>(null);
-  const [assignUser, setAssignUser] = useState<InventoryUser | null>(null);
+  // Selected User Modal
+  const [activeUser, setActiveUser] = useState<InventoryUser | null>(null);
   const [isAddUserOpen, setIsAddUserOpen] = useState(false);
 
-  // In-website confirmation modal state (replaces Chrome confirm)
+  // In-website confirmation modal state (replaces Chrome alert)
   const [confirmState, setConfirmState] = useState<{
     isOpen: boolean;
     title: string;
@@ -76,15 +74,15 @@ export default function HomePage() {
     }
   }, [catalog, isLoaded]);
 
-  // Keep detailUser synced with latest user data
+  // Keep activeUser synced with latest user data
   useEffect(() => {
-    if (detailUser) {
-      const updated = users.find((u) => u.id === detailUser.id);
+    if (activeUser) {
+      const updated = users.find((u) => u.id === activeUser.id);
       if (updated) {
-        setDetailUser(updated);
+        setActiveUser(updated);
       }
     }
-  }, [users, detailUser]);
+  }, [users, activeUser]);
 
   // Instant Search by user name or assigned item name
   const filteredUsers = useMemo(() => {
@@ -101,7 +99,11 @@ export default function HomePage() {
   }, [users, searchQuery]);
 
   const totalAssignedCount = useMemo(() => {
-    return users.reduce((acc, user) => acc + user.assignments.length, 0);
+    return users.reduce(
+      (acc, user) =>
+        acc + user.assignments.reduce((sum, a) => sum + (a.quantity || 1), 0),
+      0
+    );
   }, [users]);
 
   // Assign item to user (adds to catalog if new)
@@ -126,19 +128,27 @@ export default function HomePage() {
       prevUsers.map((u) => {
         if (u.id !== userId) return u;
 
-        // Check if user already has this item
-        const exists = u.assignments.some(
+        // Check if user already has this item -> increment quantity
+        const existingAssignment = u.assignments.find(
           (a) => a.itemName.toLowerCase() === trimmed.toLowerCase()
         );
 
-        if (exists) {
-          return u;
+        if (existingAssignment) {
+          return {
+            ...u,
+            assignments: u.assignments.map((a) =>
+              a.id === existingAssignment.id
+                ? { ...a, quantity: (a.quantity || 1) + 1 }
+                : a
+            ),
+          };
         }
 
         const newAssignment: UserAssignment = {
           id: `asg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
           itemId: catalogItem!.id,
           itemName: catalogItem!.name,
+          quantity: 1,
         };
 
         return {
@@ -150,6 +160,62 @@ export default function HomePage() {
 
     const targetUser = users.find((u) => u.id === userId);
     showToast(`Added ${catalogItem.name} to ${targetUser?.name || "user"}`);
+  };
+
+  // Increase Quantity (+)
+  const handleIncreaseQuantity = (userId: string, assignmentId: string) => {
+    setUsers((prev) =>
+      prev.map((u) => {
+        if (u.id !== userId) return u;
+        return {
+          ...u,
+          assignments: u.assignments.map((a) =>
+            a.id === assignmentId ? { ...a, quantity: (a.quantity || 1) + 1 } : a
+          ),
+        };
+      })
+    );
+  };
+
+  // Decrease Quantity (-)
+  const handleDecreaseQuantity = (
+    userId: string,
+    assignment: UserAssignment
+  ) => {
+    if (assignment.quantity > 1) {
+      setUsers((prev) =>
+        prev.map((u) => {
+          if (u.id !== userId) return u;
+          return {
+            ...u,
+            assignments: u.assignments.map((a) =>
+              a.id === assignment.id ? { ...a, quantity: a.quantity - 1 } : a
+            ),
+          };
+        })
+      );
+    } else {
+      // Quantity is 1 -> show in-website popup modal to confirm removal
+      const targetUser = users.find((u) => u.id === userId);
+      setConfirmState({
+        isOpen: true,
+        title: "Remove Item",
+        message: `Remove "${assignment.itemName}" from ${targetUser?.name || "user"}?`,
+        onConfirm: () => {
+          setUsers((prev) =>
+            prev.map((u) => {
+              if (u.id !== userId) return u;
+              return {
+                ...u,
+                assignments: u.assignments.filter((a) => a.id !== assignment.id),
+              };
+            })
+          );
+          setConfirmState((prev) => ({ ...prev, isOpen: false }));
+          showToast(`Removed ${assignment.itemName}`);
+        },
+      });
+    }
   };
 
   // Request full remove via trash icon with in-website confirmation
@@ -196,8 +262,7 @@ export default function HomePage() {
         const reset = resetAllData();
         setUsers(reset.users);
         setCatalog(reset.catalog);
-        setDetailUser(null);
-        setAssignUser(null);
+        setActiveUser(null);
         setConfirmState((prev) => ({ ...prev, isOpen: false }));
         showToast("Reset to default data");
       },
@@ -262,8 +327,8 @@ export default function HomePage() {
               <UserRow
                 key={user.id}
                 user={user}
-                onSelectUser={(u) => setDetailUser(u)}
-                onAssignItem={(u) => setAssignUser(u)}
+                onSelectUser={(u) => setActiveUser(u)}
+                onAssignItem={(u) => setActiveUser(u)}
               />
             ))
           )}
@@ -284,23 +349,15 @@ export default function HomePage() {
         onCancel={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
       />
 
-      {/* Assign Item Modal */}
-      <AssignItemModal
-        isOpen={Boolean(assignUser)}
-        onClose={() => setAssignUser(null)}
-        user={assignUser}
+      {/* User Detail / Manage Items Modal */}
+      <UserDetailModal
+        user={activeUser}
+        isOpen={Boolean(activeUser)}
+        onClose={() => setActiveUser(null)}
         catalog={catalog}
         onAssignItem={handleAssignItem}
-      />
-
-      {/* User Detail Modal */}
-      <UserDetailModal
-        user={detailUser}
-        isOpen={Boolean(detailUser)}
-        onClose={() => setDetailUser(null)}
-        onOpenAssignModal={(u) => {
-          setAssignUser(u);
-        }}
+        onIncreaseQuantity={handleIncreaseQuantity}
+        onDecreaseQuantity={handleDecreaseQuantity}
         onRequestRemove={handleRequestRemove}
       />
 

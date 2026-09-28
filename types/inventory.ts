@@ -2,6 +2,7 @@ export interface UserAssignment {
   id: string;
   itemId: string;
   itemName: string;
+  quantity: number;
 }
 
 export interface InventoryUser {

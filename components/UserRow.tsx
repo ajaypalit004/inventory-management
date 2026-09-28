@@ -39,13 +39,16 @@ export const UserRow: React.FC<UserRowProps> = ({
             {user.name}
           </h3>
           <span className="text-xs text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity">
-            Click to view details
+            Click to view items
           </span>
         </div>
       </div>
 
-      {/* Center: Linear list of assigned items - just item names, no quantity */}
-      <div className="flex-1 flex flex-wrap items-center gap-2 min-w-0 py-1">
+      {/* Center: Linear list of assigned items - just item names */}
+      <div
+        onClick={() => onSelectUser(user)}
+        className="flex-1 flex flex-wrap items-center gap-2 min-w-0 py-1 cursor-pointer"
+      >
         {user.assignments.length === 0 ? (
           <span className="text-xs text-slate-400 italic">
             No items assigned
@@ -54,19 +57,24 @@ export const UserRow: React.FC<UserRowProps> = ({
           user.assignments.map((asg) => (
             <span
               key={asg.id}
-              className="inline-flex items-center px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs sm:text-sm font-medium text-slate-800 hover:border-blue-200 hover:bg-blue-50/40 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs sm:text-sm font-medium text-slate-800 hover:border-blue-200 hover:bg-blue-50/40 transition-colors"
             >
-              {asg.itemName}
+              <span>{asg.itemName}</span>
+              {asg.quantity > 1 && (
+                <span className="text-[11px] px-1.5 py-0.2 rounded bg-blue-100 text-blue-700 font-bold">
+                  ×{asg.quantity}
+                </span>
+              )}
             </span>
           ))
         )}
       </div>
 
-      {/* Right: Dedicated '+' button to add items */}
+      {/* Right: Dedicated '+' button to open items and manage assignments */}
       <div className="shrink-0 flex items-center justify-end">
         <button
           type="button"
-          title={`Add item to ${user.name}`}
+          title={`View and add items for ${user.name}`}
           onClick={(e) => {
             e.stopPropagation();
             onAssignItem(user);
