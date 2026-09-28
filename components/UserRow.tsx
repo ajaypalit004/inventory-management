@@ -1,23 +1,19 @@
 "use client";
 
 import React from "react";
-import { Plus, Minus } from "lucide-react";
-import { InventoryUser, UserAssignment } from "@/types/inventory";
+import { Plus } from "lucide-react";
+import { InventoryUser } from "@/types/inventory";
 
 interface UserRowProps {
   user: InventoryUser;
   onSelectUser: (user: InventoryUser) => void;
   onAssignItem: (user: InventoryUser) => void;
-  onIncreaseQuantity: (userId: string, assignmentId: string) => void;
-  onDecreaseQuantity: (userId: string, assignment: UserAssignment) => void;
 }
 
 export const UserRow: React.FC<UserRowProps> = ({
   user,
   onSelectUser,
   onAssignItem,
-  onIncreaseQuantity,
-  onDecreaseQuantity,
 }) => {
   const getInitials = (name: string) => {
     return name
@@ -48,7 +44,7 @@ export const UserRow: React.FC<UserRowProps> = ({
         </div>
       </div>
 
-      {/* Center: Linear list of assigned items with circular + and - quantity controls */}
+      {/* Center: Linear list of assigned items - just item names, no quantity */}
       <div className="flex-1 flex flex-wrap items-center gap-2 min-w-0 py-1">
         {user.assignments.length === 0 ? (
           <span className="text-xs text-slate-400 italic">
@@ -56,46 +52,12 @@ export const UserRow: React.FC<UserRowProps> = ({
           </span>
         ) : (
           user.assignments.map((asg) => (
-            <div
+            <span
               key={asg.id}
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 hover:border-blue-200 transition-colors"
+              className="inline-flex items-center px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs sm:text-sm font-medium text-slate-800 hover:border-blue-200 hover:bg-blue-50/40 transition-colors"
             >
-              {/* Item Name only */}
-              <span className="text-xs sm:text-sm font-medium text-slate-800">
-                {asg.itemName}
-              </span>
-
-              {/* Circular - and + controls on the right of item name */}
-              <div className="flex items-center gap-1.5 ml-1 pl-1.5 border-l border-slate-200">
-                <button
-                  type="button"
-                  title="Decrease quantity"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDecreaseQuantity(user.id, asg);
-                  }}
-                  className="w-5 h-5 rounded-full bg-white hover:bg-red-50 text-slate-500 hover:text-red-600 border border-slate-300 hover:border-red-300 flex items-center justify-center transition-colors shadow-2xs active:scale-90"
-                >
-                  <Minus className="w-3 h-3" />
-                </button>
-
-                <span className="text-xs font-bold text-slate-800 min-w-[14px] text-center">
-                  {asg.quantity}
-                </span>
-
-                <button
-                  type="button"
-                  title="Increase quantity"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onIncreaseQuantity(user.id, asg.id);
-                  }}
-                  className="w-5 h-5 rounded-full bg-white hover:bg-blue-50 text-slate-500 hover:text-blue-600 border border-slate-300 hover:border-blue-300 flex items-center justify-center transition-colors shadow-2xs active:scale-90"
-                >
-                  <Plus className="w-3 h-3" />
-                </button>
-              </div>
-            </div>
+              {asg.itemName}
+            </span>
           ))
         )}
       </div>

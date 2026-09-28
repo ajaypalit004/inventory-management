@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
-import { X, Plus, Minus, Trash2, Package } from "lucide-react";
+import React from "react";
+import { X, Plus, Trash2, Package } from "lucide-react";
 import { InventoryUser, UserAssignment } from "@/types/inventory";
 
 interface UserDetailModalProps {
@@ -9,8 +9,6 @@ interface UserDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   onOpenAssignModal: (user: InventoryUser) => void;
-  onIncreaseQuantity: (userId: string, assignmentId: string) => void;
-  onDecreaseQuantity: (userId: string, assignment: UserAssignment) => void;
   onRequestRemove: (userId: string, assignment: UserAssignment) => void;
 }
 
@@ -19,8 +17,6 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
   isOpen,
   onClose,
   onOpenAssignModal,
-  onIncreaseQuantity,
-  onDecreaseQuantity,
   onRequestRemove,
 }) => {
   if (!isOpen || !user) return null;
@@ -37,7 +33,7 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-in fade-in duration-150">
       <div
-        className="w-full max-w-xl bg-white rounded-2xl border border-blue-100 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-150 flex flex-col max-h-[85vh]"
+        className="w-full max-w-lg bg-white rounded-2xl border border-blue-100 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-150 flex flex-col max-h-[85vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -73,7 +69,7 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
           </div>
         </div>
 
-        {/* Linear List of Items with Circular + and - Icons */}
+        {/* Linear List of Items - Just item name and remove action */}
         <div className="p-5 overflow-y-auto flex-1 space-y-2.5">
           {user.assignments.length === 0 ? (
             <div className="text-center py-10 px-4 text-slate-400">
@@ -96,46 +92,20 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
                 key={assignment.id}
                 className="p-3.5 rounded-xl border border-slate-200 bg-white hover:border-blue-200 transition-colors flex items-center justify-between gap-3 shadow-2xs"
               >
-                {/* Item Name Only - Linear Format */}
+                {/* Item Name Only */}
                 <span className="text-sm font-medium text-slate-900 truncate">
                   {assignment.itemName}
                 </span>
 
-                {/* Right side: Circular - and + icons to increase and decrease quantity */}
-                <div className="flex items-center gap-3 shrink-0">
-                  <div className="flex items-center gap-2 bg-slate-50 px-2 py-1 rounded-lg border border-slate-200">
-                    <button
-                      type="button"
-                      title="Decrease quantity"
-                      onClick={() => onDecreaseQuantity(user.id, assignment)}
-                      className="w-6 h-6 rounded-full bg-white hover:bg-red-50 text-slate-600 hover:text-red-600 border border-slate-300 hover:border-red-300 flex items-center justify-center transition-colors shadow-2xs active:scale-90"
-                    >
-                      <Minus className="w-3.5 h-3.5" />
-                    </button>
-
-                    <span className="text-sm font-bold text-slate-800 min-w-[18px] text-center">
-                      {assignment.quantity}
-                    </span>
-
-                    <button
-                      type="button"
-                      title="Increase quantity"
-                      onClick={() => onIncreaseQuantity(user.id, assignment.id)}
-                      className="w-6 h-6 rounded-full bg-white hover:bg-blue-50 text-slate-600 hover:text-blue-600 border border-slate-300 hover:border-blue-300 flex items-center justify-center transition-colors shadow-2xs active:scale-90"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  <button
-                    type="button"
-                    title="Remove item"
-                    onClick={() => onRequestRemove(user.id, assignment)}
-                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
+                {/* Remove button */}
+                <button
+                  type="button"
+                  title="Remove item"
+                  onClick={() => onRequestRemove(user.id, assignment)}
+                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
               </div>
             ))
           )}

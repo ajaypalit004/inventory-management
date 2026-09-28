@@ -101,14 +101,10 @@ export default function HomePage() {
   }, [users, searchQuery]);
 
   const totalAssignedCount = useMemo(() => {
-    return users.reduce(
-      (acc, user) =>
-        acc + user.assignments.reduce((sum, a) => sum + (a.quantity || 1), 0),
-      0
-    );
+    return users.reduce((acc, user) => acc + user.assignments.length, 0);
   }, [users]);
 
-  // 1. Assign item to user (adds to catalog if new)
+  // Assign item to user (adds to catalog if new)
   const handleAssignItem = (userId: string, itemName: string) => {
     const trimmed = itemName.trim();
     if (!trimmed) return;
@@ -130,28 +126,19 @@ export default function HomePage() {
       prevUsers.map((u) => {
         if (u.id !== userId) return u;
 
-        // If user already has this item, increase quantity
-        const existingAssignment = u.assignments.find(
+        // Check if user already has this item
+        const exists = u.assignments.some(
           (a) => a.itemName.toLowerCase() === trimmed.toLowerCase()
         );
 
-        if (existingAssignment) {
-          return {
-            ...u,
-            assignments: u.assignments.map((a) =>
-              a.id === existingAssignment.id
-                ? { ...a, quantity: a.quantity + 1 }
-                : a
-            ),
-          };
+        if (exists) {
+          return u;
         }
 
-        // Otherwise add new assignment
         const newAssignment: UserAssignment = {
           id: `asg-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
           itemId: catalogItem!.id,
           itemName: catalogItem!.name,
-          quantity: 1,
         };
 
         return {
@@ -165,63 +152,7 @@ export default function HomePage() {
     showToast(`Added ${catalogItem.name} to ${targetUser?.name || "user"}`);
   };
 
-  // 2. Increase Quantity (+)
-  const handleIncreaseQuantity = (userId: string, assignmentId: string) => {
-    setUsers((prev) =>
-      prev.map((u) => {
-        if (u.id !== userId) return u;
-        return {
-          ...u,
-          assignments: u.assignments.map((a) =>
-            a.id === assignmentId ? { ...a, quantity: a.quantity + 1 } : a
-          ),
-        };
-      })
-    );
-  };
-
-  // 3. Decrease Quantity (-)
-  const handleDecreaseQuantity = (
-    userId: string,
-    assignment: UserAssignment
-  ) => {
-    if (assignment.quantity > 1) {
-      setUsers((prev) =>
-        prev.map((u) => {
-          if (u.id !== userId) return u;
-          return {
-            ...u,
-            assignments: u.assignments.map((a) =>
-              a.id === assignment.id ? { ...a, quantity: a.quantity - 1 } : a
-            ),
-          };
-        })
-      );
-    } else {
-      // Quantity is 1 -> show in-website popup modal to confirm removal!
-      const targetUser = users.find((u) => u.id === userId);
-      setConfirmState({
-        isOpen: true,
-        title: "Remove Item",
-        message: `Remove "${assignment.itemName}" from ${targetUser?.name || "user"}?`,
-        onConfirm: () => {
-          setUsers((prev) =>
-            prev.map((u) => {
-              if (u.id !== userId) return u;
-              return {
-                ...u,
-                assignments: u.assignments.filter((a) => a.id !== assignment.id),
-              };
-            })
-          );
-          setConfirmState((prev) => ({ ...prev, isOpen: false }));
-          showToast(`Removed ${assignment.itemName}`);
-        },
-      });
-    }
-  };
-
-  // 4. Request full remove via trash icon
+  // Request full remove via trash icon with in-website confirmation
   const handleRequestRemove = (userId: string, assignment: UserAssignment) => {
     const targetUser = users.find((u) => u.id === userId);
     setConfirmState({
@@ -244,7 +175,7 @@ export default function HomePage() {
     });
   };
 
-  // 5. Add User
+  // Add User
   const handleAddUser = (newUserData: Omit<InventoryUser, "id" | "assignments">) => {
     const newUser: InventoryUser = {
       ...newUserData,
@@ -255,7 +186,7 @@ export default function HomePage() {
     showToast(`Added ${newUser.name}`);
   };
 
-  // 6. Reset Data (with in-website confirmation modal)
+  // Reset Data (with in-website confirmation modal)
   const handleRequestReset = () => {
     setConfirmState({
       isOpen: true,
@@ -295,7 +226,7 @@ export default function HomePage() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
-        {/* Top Search Bar (No filters as requested) */}
+        {/* Top Search Bar (No filters) */}
         <div>
           <div className="relative">
             <Search className="w-5 h-5 absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-600" />
@@ -333,8 +264,6 @@ export default function HomePage() {
                 user={user}
                 onSelectUser={(u) => setDetailUser(u)}
                 onAssignItem={(u) => setAssignUser(u)}
-                onIncreaseQuantity={handleIncreaseQuantity}
-                onDecreaseQuantity={handleDecreaseQuantity}
               />
             ))
           )}
@@ -346,7 +275,7 @@ export default function HomePage() {
         Inventory Desk • Minimal Blue &amp; White
       </footer>
 
-      {/* In-Website Confirmation Modal (replaces browser confirm) */}
+      {/* In-Website Confirmation Modal */}
       <ConfirmModal
         isOpen={confirmState.isOpen}
         title={confirmState.title}
@@ -355,7 +284,7 @@ export default function HomePage() {
         onCancel={() => setConfirmState((prev) => ({ ...prev, isOpen: false }))}
       />
 
-      {/* Assign Item Modal (Opens cleanly from '+' button or from UserDetail) */}
+      {/* Assign Item Modal */}
       <AssignItemModal
         isOpen={Boolean(assignUser)}
         onClose={() => setAssignUser(null)}
@@ -364,7 +293,7 @@ export default function HomePage() {
         onAssignItem={handleAssignItem}
       />
 
-      {/* User Detail Modal (Opens when selecting user, in linear format with circular + and -) */}
+      {/* User Detail Modal */}
       <UserDetailModal
         user={detailUser}
         isOpen={Boolean(detailUser)}
@@ -372,8 +301,6 @@ export default function HomePage() {
         onOpenAssignModal={(u) => {
           setAssignUser(u);
         }}
-        onIncreaseQuantity={handleIncreaseQuantity}
-        onDecreaseQuantity={handleDecreaseQuantity}
         onRequestRemove={handleRequestRemove}
       />
 
