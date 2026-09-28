@@ -81,8 +81,15 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
       (a, b) => extractTimestamp(b.pathname) - extractTimestamp(a.pathname)
     );
     const latestBlob = sorted[0];
+    const latestBlobTimestamp = extractTimestamp(latestBlob.pathname);
 
-    const response = await fetch(latestBlob.url, { cache: "no-store" });
+    // CRITICAL: If inMemoryLatest is newer or equal to the newest listed blob, use inMemoryLatest!
+    // This protects against Vercel Blob list() eventual consistency where a freshly written blob is not yet listed.
+    if (inMemoryLatest && inMemoryLatest.updatedAt >= latestBlobTimestamp) {
+      return inMemoryLatest;
+    }
+
+    const response = await fetch(latestBlob.url + `?t=${Date.now()}`, { cache: "no-store" });
     if (!response.ok) {
       if (inMemoryLatest) return inMemoryLatest;
       throw new Error(`Failed to fetch blob: ${response.status}`);
@@ -92,10 +99,12 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
     const payload: CloudInventoryPayload = {
       users: Array.isArray(data.users) ? data.users : INITIAL_USERS,
       catalog: Array.isArray(data.catalog) ? data.catalog : INITIAL_CATALOG,
-      updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : Date.now(),
+      updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : latestBlobTimestamp,
     };
 
-    inMemoryLatest = payload;
+    if (!inMemoryLatest || payload.updatedAt >= inMemoryLatest.updatedAt) {
+      inMemoryLatest = payload;
+    }
 
     // Prune only blobs beyond the top 5 newest versions so in-flight requests are never disrupted
     if (sorted.length > 5) {
@@ -103,7 +112,7 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
       del(staleUrls).catch(() => {});
     }
 
-    return payload;
+    return inMemoryLatest;
   } catch (err) {
     console.error("Error reading cloud inventory data:", err);
     return inMemoryLatest || {

@@ -30,8 +30,17 @@ export default function HomePage() {
   // Search Bar (No filters)
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Selected User Modal
-  const [activeUser, setActiveUser] = useState<InventoryUser | null>(null);
+  // Selected User Modal - single source of truth is activeUserId
+  const [activeUserId, setActiveUserId] = useState<string | null>(null);
+  const activeUser = useMemo(() => {
+    if (!activeUserId) return null;
+    return (
+      liveUsersRef.current.find((u) => u.id === activeUserId) ||
+      users.find((u) => u.id === activeUserId) ||
+      null
+    );
+  }, [users, activeUserId]);
+
   const [isAddUserOpen, setIsAddUserOpen] = useState(false);
 
   // In-website confirmation modal state (replaces Chrome alert)
@@ -60,7 +69,45 @@ export default function HomePage() {
   // Tracking refs for multi-device sync and local operation serialization
   const lastLocalEditTimestamp = useRef<number>(0);
   const activeUserIdRef = useRef<string | null>(null);
-  activeUserIdRef.current = activeUser ? activeUser.id : null;
+  activeUserIdRef.current = activeUserId;
+
+  // Track items intentionally deleted by local user within last 30s so server lag never re-adds them
+  const deletedRecentlyRef = useRef<Map<string, number>>(new Map());
+
+  // Helper for non-destructive local merge with incoming server data
+  const mergeServerWithLocal = useCallback((serverUsers: InventoryUser[]): InventoryUser[] => {
+    const now = Date.now();
+    for (const [key, ts] of deletedRecentlyRef.current.entries()) {
+      if (now - ts > 30000) deletedRecentlyRef.current.delete(key);
+    }
+
+    return serverUsers.map((serverUser) => {
+      const localUser = liveUsersRef.current.find((u) => u.id === serverUser.id);
+      if (!localUser) return serverUser;
+
+      const serverItemNames = new Set(
+        (serverUser.assignments || []).map((a) => a && a.itemName ? a.itemName.trim().toLowerCase() : "")
+      );
+
+      // Local assignments that the server response hasn't captured yet
+      const unconfirmedLocal = (localUser.assignments || []).filter((la) => {
+        if (!la || !la.itemName) return false;
+        const lower = la.itemName.trim().toLowerCase();
+        // If user explicitly deleted it recently, do not preserve it
+        if (deletedRecentlyRef.current.has(lower)) return false;
+        // If server already has it, no need to duplicate
+        if (serverItemNames.has(lower)) return false;
+        return true;
+      });
+
+      if (unconfirmedLocal.length === 0) return serverUser;
+
+      return {
+        ...serverUser,
+        assignments: [...unconfirmedLocal, ...(serverUser.assignments || [])],
+      };
+    });
+  }, []);
 
   // Sequential Atomic Batch Queue to guarantee 100% order of execution and zero lost updates
   const pendingActionsRef = useRef<InventoryAction[]>([]);
@@ -91,18 +138,31 @@ export default function HomePage() {
 
         const data = await res.json();
 
-        // Only update local state if no new local user actions are pending in the queue
+        // Safe client update: preserve unconfirmed local assignments so fast additions never disappear
+        if (Array.isArray(data.users)) {
+          const merged = mergeServerWithLocal(data.users);
+          liveUsersRef.current = merged;
+          setUsers(merged);
+          saveStoredUsers(merged);
+        }
+        if (Array.isArray(data.catalog)) {
+          // Merge catalog cleanly
+          const catMap = new Map<string, CatalogItem>();
+          for (const c of data.catalog) {
+            if (c && c.name) catMap.set(c.name.trim().toLowerCase(), c);
+          }
+          for (const lc of liveCatalogRef.current) {
+            if (lc && lc.name && !catMap.has(lc.name.trim().toLowerCase())) {
+              catMap.set(lc.name.trim().toLowerCase(), lc);
+            }
+          }
+          const mergedCatalog = Array.from(catMap.values());
+          liveCatalogRef.current = mergedCatalog;
+          setCatalog(mergedCatalog);
+          saveStoredCatalog(mergedCatalog);
+        }
+
         if (pendingActionsRef.current.length === 0) {
-          if (Array.isArray(data.users)) {
-            liveUsersRef.current = data.users;
-            setUsers(data.users);
-            saveStoredUsers(data.users);
-          }
-          if (Array.isArray(data.catalog)) {
-            liveCatalogRef.current = data.catalog;
-            setCatalog(data.catalog);
-            saveStoredCatalog(data.catalog);
-          }
           setSyncStatus("synced");
         }
       } catch (err) {
@@ -114,7 +174,7 @@ export default function HomePage() {
     }
 
     isDrainingRef.current = false;
-  }, []);
+  }, [mergeServerWithLocal]);
 
   // Dispatch Action immediately into the atomic sequential queue
   const dispatchAction = useCallback(
@@ -127,43 +187,57 @@ export default function HomePage() {
   );
 
   // Pull Cloud Data (Fetches additions/updates made from any other device)
-  const pullCloudData = useCallback(async (silent = false) => {
-    // If local actions are pending or in flight, or if user edited within 5s, DO NOT interrupt!
-    if (
-      isDrainingRef.current ||
-      pendingActionsRef.current.length > 0 ||
-      Date.now() - lastLocalEditTimestamp.current < 5000
-    ) {
-      return;
-    }
-
-    if (!silent) setSyncStatus("syncing");
-
-    try {
-      const res = await fetch(`/api/inventory?t=${Date.now()}`, {
-        cache: "no-store",
-      });
-      if (!res.ok) throw new Error(`Status ${res.status}`);
-
-      const data = await res.json();
-      if (Array.isArray(data.users)) {
-        liveUsersRef.current = data.users;
-        saveStoredUsers(data.users);
-        setUsers(data.users);
+  const pullCloudData = useCallback(
+    async (silent = false) => {
+      // If local actions are pending or in flight, or if user edited within 5s, DO NOT interrupt!
+      if (
+        isDrainingRef.current ||
+        pendingActionsRef.current.length > 0 ||
+        Date.now() - lastLocalEditTimestamp.current < 5000
+      ) {
+        return;
       }
 
-      if (Array.isArray(data.catalog)) {
-        liveCatalogRef.current = data.catalog;
-        saveStoredCatalog(data.catalog);
-        setCatalog(data.catalog);
-      }
+      if (!silent) setSyncStatus("syncing");
 
-      setSyncStatus("synced");
-    } catch (err) {
-      console.warn("Could not sync with cloud server:", err);
-      if (!silent) setSyncStatus("offline");
-    }
-  }, []);
+      try {
+        const res = await fetch(`/api/inventory?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`Status ${res.status}`);
+
+        const data = await res.json();
+        if (Array.isArray(data.users)) {
+          const merged = mergeServerWithLocal(data.users);
+          liveUsersRef.current = merged;
+          saveStoredUsers(merged);
+          setUsers(merged);
+        }
+
+        if (Array.isArray(data.catalog)) {
+          const catMap = new Map<string, CatalogItem>();
+          for (const c of data.catalog) {
+            if (c && c.name) catMap.set(c.name.trim().toLowerCase(), c);
+          }
+          for (const lc of liveCatalogRef.current) {
+            if (lc && lc.name && !catMap.has(lc.name.trim().toLowerCase())) {
+              catMap.set(lc.name.trim().toLowerCase(), lc);
+            }
+          }
+          const mergedCatalog = Array.from(catMap.values());
+          liveCatalogRef.current = mergedCatalog;
+          saveStoredCatalog(mergedCatalog);
+          setCatalog(mergedCatalog);
+        }
+
+        setSyncStatus("synced");
+      } catch (err) {
+        console.warn("Could not sync with cloud server:", err);
+        if (!silent) setSyncStatus("offline");
+      }
+    },
+    [mergeServerWithLocal]
+  );
 
   // 1. Initial Load: Load cached local data instantly, then fetch true cloud state
   useEffect(() => {
@@ -205,16 +279,6 @@ export default function HomePage() {
       clearInterval(pollInterval);
     };
   }, [pullCloudData]);
-
-  // Keep activeUser modal synced with latest user data
-  useEffect(() => {
-    if (activeUserIdRef.current) {
-      const updated = users.find((u) => u.id === activeUserIdRef.current);
-      if (updated) {
-        setActiveUser(updated);
-      }
-    }
-  }, [users]);
 
   // Instant Search by user name or assigned item name (case-insensitive)
   const filteredUsers = useMemo(() => {
@@ -304,10 +368,6 @@ export default function HomePage() {
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
 
-    // Sync modal activeUser immediately for instantaneous zero-latency feedback
-    const active = updatedUsers.find((u) => u.id === userId);
-    if (active) setActiveUser(active);
-
     // 3. Dispatch atomic action with identical ID and itemName into the batch queue
     dispatchAction({
       type: "ASSIGN_ITEM",
@@ -342,9 +402,6 @@ export default function HomePage() {
     liveUsersRef.current = updatedUsers;
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
-
-    const active = updatedUsers.find((u) => u.id === userId);
-    if (active) setActiveUser(active);
 
     dispatchAction({
       type: "UPDATE_QUANTITY",
@@ -386,9 +443,6 @@ export default function HomePage() {
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
 
-    const active = updatedUsers.find((u) => u.id === userId);
-    if (active) setActiveUser(active);
-
     dispatchAction({
       type: "UPDATE_QUANTITY",
       userId,
@@ -407,6 +461,7 @@ export default function HomePage() {
       onConfirm: () => {
         lastLocalEditTimestamp.current = Date.now();
         const itemLower = assignment.itemName.trim().toLowerCase();
+        deletedRecentlyRef.current.set(itemLower, Date.now());
 
         const currentUsers = liveUsersRef.current;
         const updatedUsers = currentUsers.map((u) => {
@@ -440,9 +495,6 @@ export default function HomePage() {
         setUsers(updatedUsers);
         saveStoredUsers(updatedUsers);
 
-        const active = updatedUsers.find((u) => u.id === userId);
-        if (active) setActiveUser(active);
-
         dispatchAction({
           type: "REMOVE_ASSIGNMENT",
           userId,
@@ -461,6 +513,7 @@ export default function HomePage() {
     const trimmed = itemName.trim();
     const targetLower = trimmed.toLowerCase();
     lastLocalEditTimestamp.current = Date.now();
+    deletedRecentlyRef.current.set(targetLower, Date.now());
 
     // 1. Immediately remove from catalog locally
     const updatedCatalog = liveCatalogRef.current.filter(
@@ -484,11 +537,6 @@ export default function HomePage() {
     liveUsersRef.current = updatedUsers;
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
-
-    if (activeUserIdRef.current) {
-      const active = updatedUsers.find((u) => u.id === activeUserIdRef.current);
-      if (active) setActiveUser(active);
-    }
 
     // 3. Dispatch action to server
     dispatchAction({
@@ -517,7 +565,7 @@ export default function HomePage() {
           userId: user.id,
         });
 
-        setActiveUser(null);
+        setActiveUserId(null);
         setConfirmState((prev) => ({ ...prev, isOpen: false }));
         showToast(`Deleted ${user.name}`);
       },
@@ -558,7 +606,7 @@ export default function HomePage() {
         liveCatalogRef.current = reset.catalog;
         setUsers(reset.users);
         setCatalog(reset.catalog);
-        setActiveUser(null);
+        setActiveUserId(null);
 
         dispatchAction({ type: "RESET" });
 
@@ -631,8 +679,8 @@ export default function HomePage() {
               <UserRow
                 key={user.id}
                 user={user}
-                onSelectUser={(u) => setActiveUser(u)}
-                onAssignItem={(u) => setActiveUser(u)}
+                onSelectUser={(u) => setActiveUserId(u.id)}
+                onAssignItem={(u) => setActiveUserId(u.id)}
               />
             ))
           )}
@@ -648,7 +696,7 @@ export default function HomePage() {
       <UserDetailModal
         user={activeUser}
         isOpen={Boolean(activeUser)}
-        onClose={() => setActiveUser(null)}
+        onClose={() => setActiveUserId(null)}
         catalog={catalog}
         onAssignItem={handleAssignItem}
         onIncreaseQuantity={handleIncreaseQuantity}
