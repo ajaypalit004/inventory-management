@@ -37,12 +37,33 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
   }
 
   try {
-    const listResult = await list({ prefix: BLOB_PREFIX, limit: 20 });
+    const listResult = await list({ prefix: BLOB_PREFIX, limit: 1000 });
 
     if (listResult.blobs.length === 0) {
       if (inMemoryLatest) {
         return inMemoryLatest;
       }
+
+      // Check for canonical checkpoint
+      try {
+        const checkpointList = await list({ prefix: "inventory-latest-checkpoint" });
+        const checkpointBlob = checkpointList.blobs.find((b) => b.pathname === "inventory-latest-checkpoint.json");
+        if (checkpointBlob) {
+          const res = await fetch(checkpointBlob.url + `?t=${Date.now()}`, { cache: "no-store" });
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.users)) {
+              const payload: CloudInventoryPayload = {
+                users: data.users,
+                catalog: Array.isArray(data.catalog) ? data.catalog : INITIAL_CATALOG,
+                updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : Date.now(),
+              };
+              inMemoryLatest = payload;
+              return payload;
+            }
+          }
+        }
+      } catch {}
 
       // Check for legacy inventory-data.json
       const legacyList = await list({ prefix: "inventory-data" });
@@ -106,20 +127,17 @@ export async function getCloudData(): Promise<CloudInventoryPayload> {
       inMemoryLatest = payload;
     }
 
-    // Prune only blobs beyond the top 5 newest versions so in-flight requests are never disrupted
-    if (sorted.length > 5) {
-      const staleUrls = sorted.slice(5).map((b) => b.url);
+    // Prune only blobs beyond the top 30 newest versions so a deep history buffer is preserved
+    if (sorted.length > 30) {
+      const staleUrls = sorted.slice(30).map((b) => b.url);
       del(staleUrls).catch(() => {});
     }
 
     return inMemoryLatest;
   } catch (err) {
     console.error("Error reading cloud inventory data:", err);
-    return inMemoryLatest || {
-      users: INITIAL_USERS,
-      catalog: INITIAL_CATALOG,
-      updatedAt: Date.now(),
-    };
+    if (inMemoryLatest) return inMemoryLatest;
+    throw err;
   }
 }
 
@@ -140,14 +158,21 @@ export async function saveCloudData(
     return payload;
   }
 
-  // Versioned pathname with millisecond timestamp guarantees uniqueness and order
-  const newPathname = `${BLOB_PREFIX}${Date.now()}-${Math.random().toString(36).substring(2, 6)}.json`;
+  // 1. Versioned immutable snapshot with millisecond timestamp
+  const newPathname = `${BLOB_PREFIX}${payload.updatedAt}-${Math.random().toString(36).substring(2, 6)}.json`;
 
   await put(newPathname, JSON.stringify(payload), {
     access: "public",
     addRandomSuffix: false,
     contentType: "application/json",
   });
+
+  // 2. Dual redundancy: write to canonical checkpoint file asynchronously
+  put("inventory-latest-checkpoint.json", JSON.stringify(payload), {
+    access: "public",
+    addRandomSuffix: false,
+    contentType: "application/json",
+  }).catch((err) => console.error("Checkpoint write error:", err));
 
   return payload;
 }

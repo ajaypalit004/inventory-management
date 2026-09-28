@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Package, Plus, RotateCcw, RefreshCw, CheckCircle2, Cloud } from "lucide-react";
+import { Package, Plus, RotateCcw, RefreshCw, CheckCircle2, Cloud, FileSpreadsheet } from "lucide-react";
 
 export type SyncStatus = "synced" | "syncing" | "offline" | "error";
 
@@ -12,6 +12,7 @@ interface NavbarProps {
   onOpenAddUser: () => void;
   onResetData: () => void;
   onManualRefresh: () => void;
+  onExportExcel: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -21,6 +22,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAddUser,
   onResetData,
   onManualRefresh,
+  onExportExcel,
 }) => {
   return (
     <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-blue-100 shadow-2xs">
@@ -83,10 +85,21 @@ export const Navbar: React.FC<NavbarProps> = ({
               />
             </button>
 
+            {/* Export to Excel button */}
+            <button
+              onClick={onExportExcel}
+              title="Export all inventory data into an Excel spreadsheet (.xlsx)"
+              type="button"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs sm:text-sm font-semibold rounded-lg text-emerald-700 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 border border-emerald-200/80 transition-all shadow-2xs active:scale-95 cursor-pointer"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>Export Excel</span>
+            </button>
+
             <button
               onClick={onOpenAddUser}
               type="button"
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs sm:text-sm font-semibold rounded-lg text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 transition-colors shadow-2xs"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs sm:text-sm font-semibold rounded-lg text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 transition-colors shadow-2xs active:scale-95"
             >
               <Plus className="w-4 h-4" />
               <span>Add User</span>

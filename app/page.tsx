@@ -10,6 +10,7 @@ import { ConfirmModal } from "@/components/ConfirmModal";
 import { CatalogItem, InventoryUser, UserAssignment } from "@/types/inventory";
 import { INITIAL_CATALOG, INITIAL_USERS } from "@/lib/initialData";
 import { InventoryAction } from "@/lib/cloudStorage";
+import { exportInventoryToExcel } from "@/lib/exportExcel";
 import {
   getStoredUsers,
   saveStoredUsers,
@@ -621,6 +622,17 @@ export default function HomePage() {
     });
   };
 
+  // Export all inventory data into an Excel spreadsheet
+  const handleExportExcel = () => {
+    try {
+      exportInventoryToExcel(liveUsersRef.current, liveCatalogRef.current);
+      showToast("Exported inventory to Excel!");
+    } catch (err) {
+      console.error("Excel export error:", err);
+      showToast("Failed to export Excel file");
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col selection:bg-blue-100 selection:text-blue-900">
       {/* Toast Notification */}
@@ -644,6 +656,7 @@ export default function HomePage() {
           pullCloudData(false);
           showToast("Syncing latest data...");
         }}
+        onExportExcel={handleExportExcel}
       />
 
       {/* Main Content Area */}
