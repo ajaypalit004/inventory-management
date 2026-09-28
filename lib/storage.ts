@@ -1,8 +1,8 @@
-import { CatalogItem, InventoryUser, ItemCategory, UserAssignment } from "@/types/inventory";
+import { CatalogItem, InventoryUser } from "@/types/inventory";
 import { INITIAL_CATALOG, INITIAL_USERS } from "./initialData";
 
-const USERS_STORAGE_KEY = "inventory_users_v1";
-const CATALOG_STORAGE_KEY = "inventory_catalog_v1";
+const USERS_STORAGE_KEY = "inventory_users_v2";
+const CATALOG_STORAGE_KEY = "inventory_catalog_v2";
 
 export function getStoredUsers(): InventoryUser[] {
   if (typeof window === "undefined") return INITIAL_USERS;
@@ -33,8 +33,20 @@ export function getStoredCatalog(): CatalogItem[] {
   try {
     const raw = localStorage.getItem(CATALOG_STORAGE_KEY);
     if (!raw) {
-      localStorage.setItem(CATALOG_STORAGE_KEY, JSON.stringify(INITIAL_CATALOG));
-      return INITIAL_CATALOG;
+      // Build initial catalog from initial assigned items so they are available in listed items
+      const itemMap = new Map<string, string>();
+      INITIAL_USERS.forEach((u) => {
+        u.assignments.forEach((a) => {
+          if (!itemMap.has(a.itemName)) {
+            itemMap.set(a.itemName, a.itemId);
+          }
+        });
+      });
+      const initialFromUsers: CatalogItem[] = Array.from(itemMap.entries()).map(
+        ([name, id]) => ({ id, name })
+      );
+      localStorage.setItem(CATALOG_STORAGE_KEY, JSON.stringify(initialFromUsers));
+      return initialFromUsers;
     }
     return JSON.parse(raw);
   } catch (err) {
@@ -54,8 +66,8 @@ export function saveStoredCatalog(items: CatalogItem[]): void {
 
 export function resetAllData(): { users: InventoryUser[]; catalog: CatalogItem[] } {
   if (typeof window !== "undefined") {
-    localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(INITIAL_USERS));
-    localStorage.setItem(CATALOG_STORAGE_KEY, JSON.stringify(INITIAL_CATALOG));
+    localStorage.removeItem(USERS_STORAGE_KEY);
+    localStorage.removeItem(CATALOG_STORAGE_KEY);
   }
-  return { users: INITIAL_USERS, catalog: INITIAL_CATALOG };
+  return { users: INITIAL_USERS, catalog: [] };
 }
