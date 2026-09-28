@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getCloudData, saveCloudData } from "@/lib/cloudStorage";
+import { getCloudData, queueAction, InventoryAction } from "@/lib/cloudStorage";
 import { InventoryUser, CatalogItem } from "@/types/inventory";
 
 export const dynamic = "force-dynamic";
@@ -25,28 +25,45 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+
+    // 1. Explicit atomic action
+    if (body.action && typeof body.action.type === "string") {
+      const action = body.action as InventoryAction;
+      const updated = await queueAction(action);
+      return NextResponse.json(updated, {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+      });
+    }
+
+    // 2. Full sync payload (handled safely with non-destructive SYNC_MERGE)
     const { users, catalog } = body as {
       users?: InventoryUser[];
       catalog?: CatalogItem[];
     };
 
-    if (!Array.isArray(users)) {
-      return NextResponse.json(
-        { error: "Invalid payload: 'users' array required" },
-        { status: 400 }
-      );
+    if (Array.isArray(users)) {
+      const updated = await queueAction({
+        type: "SYNC_MERGE",
+        users,
+        catalog: Array.isArray(catalog) ? catalog : [],
+      });
+      return NextResponse.json(updated, {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+      });
     }
 
-    const saved = await saveCloudData(users, Array.isArray(catalog) ? catalog : []);
-    return NextResponse.json(saved, {
-      headers: {
-        "Cache-Control": "no-store, no-cache, must-revalidate",
-      },
-    });
+    return NextResponse.json(
+      { error: "Invalid payload: provide 'action' or 'users' array" },
+      { status: 400 }
+    );
   } catch (error) {
     console.error("POST /api/inventory error:", error);
     return NextResponse.json(
-      { error: "Failed to save inventory data" },
+      { error: "Failed to process inventory update" },
       { status: 500 }
     );
   }

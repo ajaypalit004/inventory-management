@@ -9,6 +9,7 @@ import { AddUserModal } from "@/components/AddUserModal";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { CatalogItem, InventoryUser, UserAssignment } from "@/types/inventory";
 import { INITIAL_CATALOG, INITIAL_USERS } from "@/lib/initialData";
+import { InventoryAction } from "@/lib/cloudStorage";
 import {
   getStoredUsers,
   saveStoredUsers,
@@ -55,45 +56,46 @@ export default function HomePage() {
 
   // Tracking refs for multi-device sync
   const lastLocalEditTimestamp = useRef<number>(0);
-  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const isCloudInitialized = useRef<boolean>(false);
   const activeUserIdRef = useRef<string | null>(null);
   activeUserIdRef.current = activeUser ? activeUser.id : null;
 
-  // Cloud Save Helper (Debounced)
-  const scheduleCloudSync = useCallback(
-    (newUsers: InventoryUser[], newCatalog: CatalogItem[]) => {
-      lastLocalEditTimestamp.current = Date.now();
-      setSyncStatus("syncing");
+  // Dispatch Action immediately to server (Atomic & Keepalive)
+  const dispatchAction = useCallback(async (action: InventoryAction) => {
+    lastLocalEditTimestamp.current = Date.now();
+    setSyncStatus("syncing");
 
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
+    try {
+      const res = await fetch("/api/inventory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+        keepalive: true, // Guarantees execution even if page unloads or refreshes!
+      });
+
+      if (!res.ok) {
+        throw new Error(`Cloud action failed with status ${res.status}`);
       }
 
-      saveTimeoutRef.current = setTimeout(async () => {
-        try {
-          const res = await fetch("/api/inventory", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ users: newUsers, catalog: newCatalog }),
-          });
-          if (!res.ok) {
-            throw new Error(`Cloud save failed: ${res.status}`);
-          }
-          setSyncStatus("synced");
-        } catch (err) {
-          console.error("Cloud synchronization error:", err);
-          setSyncStatus("error");
-        }
-      }, 500);
-    },
-    []
-  );
+      const data = await res.json();
+      if (Array.isArray(data.users)) {
+        setUsers(data.users);
+        saveStoredUsers(data.users);
+      }
+      if (Array.isArray(data.catalog)) {
+        setCatalog(data.catalog);
+        saveStoredCatalog(data.catalog);
+      }
+      setSyncStatus("synced");
+    } catch (err) {
+      console.error("Action dispatch error:", err);
+      setSyncStatus("error");
+    }
+  }, []);
 
-  // Cloud Fetch Helper (Pulls updates made from any other device)
+  // Pull Cloud Data (Fetches additions/updates made from any other device)
   const pullCloudData = useCallback(async (silent = false) => {
-    // If the user has made an edit in the last 2 seconds, avoid overwriting
-    if (Date.now() - lastLocalEditTimestamp.current < 2500) {
+    // If local user just made an edit within 2 seconds, do not interrupt
+    if (Date.now() - lastLocalEditTimestamp.current < 2000) {
       return;
     }
 
@@ -108,7 +110,6 @@ export default function HomePage() {
       const data = await res.json();
       if (Array.isArray(data.users)) {
         setUsers((currentUsers) => {
-          // Compare JSON to avoid re-rendering if identical
           if (JSON.stringify(currentUsers) !== JSON.stringify(data.users)) {
             saveStoredUsers(data.users);
             return data.users;
@@ -134,7 +135,7 @@ export default function HomePage() {
     }
   }, []);
 
-  // 1. Initial Load: Load fast from local cache first, then sync immediately with cloud
+  // 1. Initial Load: Load cached local data instantly, then fetch true cloud state
   useEffect(() => {
     const loadedUsers = getStoredUsers();
     const loadedCatalog = getStoredCatalog();
@@ -142,10 +143,7 @@ export default function HomePage() {
     setCatalog(loadedCatalog);
     setIsLoaded(true);
 
-    // Initial cloud fetch
-    pullCloudData(false).then(() => {
-      isCloudInitialized.current = true;
-    });
+    pullCloudData(false);
   }, [pullCloudData]);
 
   // 2. Multi-device live sync: periodic polling every 5 seconds + on window focus/tab change
@@ -163,7 +161,6 @@ export default function HomePage() {
     window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
-    // Light periodic polling to keep all open devices in sync automatically
     const pollInterval = setInterval(() => {
       if (document.visibilityState === "visible") {
         pullCloudData(true);
@@ -177,7 +174,7 @@ export default function HomePage() {
     };
   }, [pullCloudData]);
 
-  // Keep activeUser synced with latest user data (including when multi-device update arrives)
+  // Keep activeUser modal synced with latest user data
   useEffect(() => {
     if (activeUserIdRef.current) {
       const updated = users.find((u) => u.id === activeUserIdRef.current);
@@ -187,7 +184,7 @@ export default function HomePage() {
     }
   }, [users]);
 
-  // Instant Search by user name or assigned item name
+  // Instant Search by user name or assigned item name (case-insensitive)
   const filteredUsers = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return users;
@@ -209,19 +206,20 @@ export default function HomePage() {
     );
   }, [users]);
 
-  // Assign item to user (adds to catalog if new)
+  // Assign item to user (Case-insensitive check, adds to catalog if new)
   const handleAssignItem = (userId: string, itemName: string) => {
     const trimmed = itemName.trim();
     if (!trimmed) return;
 
+    // 1. Optimistic Local Update
     let updatedCatalog = catalog;
     let catalogItem = catalog.find(
-      (c) => c.name.toLowerCase() === trimmed.toLowerCase()
+      (c) => c.name.trim().toLowerCase() === trimmed.toLowerCase()
     );
 
     if (!catalogItem) {
       catalogItem = {
-        id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 3)}`,
+        id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         name: trimmed,
       };
       updatedCatalog = [catalogItem, ...catalog];
@@ -233,7 +231,7 @@ export default function HomePage() {
       if (u.id !== userId) return u;
 
       const existingIndex = u.assignments.findIndex(
-        (a) => a.itemName.toLowerCase() === trimmed.toLowerCase()
+        (a) => a.itemName.trim().toLowerCase() === trimmed.toLowerCase()
       );
 
       if (existingIndex > -1) {
@@ -246,7 +244,7 @@ export default function HomePage() {
       }
 
       const newAssignment: UserAssignment = {
-        id: `assign-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        id: `assign-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         itemId: catalogItem!.id,
         itemName: catalogItem!.name,
         quantity: 1,
@@ -260,7 +258,15 @@ export default function HomePage() {
 
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
-    scheduleCloudSync(updatedUsers, updatedCatalog);
+
+    // 2. Dispatch atomic action immediately
+    dispatchAction({
+      type: "ASSIGN_ITEM",
+      userId,
+      itemName: trimmed,
+      quantity: 1,
+    });
+
     showToast(`Assigned ${catalogItem.name}`);
   };
 
@@ -278,7 +284,13 @@ export default function HomePage() {
 
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
-    scheduleCloudSync(updatedUsers, catalog);
+
+    dispatchAction({
+      type: "UPDATE_QUANTITY",
+      userId,
+      assignmentId,
+      delta: 1,
+    });
   };
 
   // Decrease quantity
@@ -305,7 +317,13 @@ export default function HomePage() {
 
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
-    scheduleCloudSync(updatedUsers, catalog);
+
+    dispatchAction({
+      type: "UPDATE_QUANTITY",
+      userId,
+      assignmentId: assignment.id,
+      delta: -1,
+    });
   };
 
   // Remove assignment with in-website confirmation modal
@@ -325,11 +343,37 @@ export default function HomePage() {
 
         setUsers(updatedUsers);
         saveStoredUsers(updatedUsers);
-        scheduleCloudSync(updatedUsers, catalog);
+
+        dispatchAction({
+          type: "REMOVE_ASSIGNMENT",
+          userId,
+          assignmentId: assignment.id,
+        });
+
         setConfirmState((prev) => ({ ...prev, isOpen: false }));
         showToast(`Removed ${assignment.itemName}`);
       },
     });
+  };
+
+  // Remove item from Catalog permanently so it is never suggested/recalled again
+  const handleRemoveCatalogItem = (itemName: string) => {
+    const trimmed = itemName.trim();
+    const targetLower = trimmed.toLowerCase();
+
+    const updatedCatalog = catalog.filter(
+      (c) => c.name.trim().toLowerCase() !== targetLower
+    );
+
+    setCatalog(updatedCatalog);
+    saveStoredCatalog(updatedCatalog);
+
+    dispatchAction({
+      type: "REMOVE_CATALOG_ITEM",
+      itemName: trimmed,
+    });
+
+    showToast(`Removed "${trimmed}" from item list`);
   };
 
   // Delete User with in-website confirmation
@@ -342,7 +386,12 @@ export default function HomePage() {
         const updatedUsers = users.filter((u) => u.id !== user.id);
         setUsers(updatedUsers);
         saveStoredUsers(updatedUsers);
-        scheduleCloudSync(updatedUsers, catalog);
+
+        dispatchAction({
+          type: "DELETE_USER",
+          userId: user.id,
+        });
+
         setActiveUser(null);
         setConfirmState((prev) => ({ ...prev, isOpen: false }));
         showToast(`Deleted ${user.name}`);
@@ -352,16 +401,22 @@ export default function HomePage() {
 
   // Add User
   const handleAddUser = (newUserData: Omit<InventoryUser, "id" | "assignments">) => {
+    const trimmedName = newUserData.name.trim();
     const newUser: InventoryUser = {
-      ...newUserData,
       id: `user-${Date.now()}`,
+      name: trimmedName,
       assignments: [],
     };
     const updatedUsers = [newUser, ...users];
     setUsers(updatedUsers);
     saveStoredUsers(updatedUsers);
-    scheduleCloudSync(updatedUsers, catalog);
-    showToast(`Added ${newUser.name}`);
+
+    dispatchAction({
+      type: "ADD_USER",
+      name: trimmedName,
+    });
+
+    showToast(`Added ${trimmedName}`);
   };
 
   // Reset Data (with in-website confirmation modal)
@@ -375,7 +430,9 @@ export default function HomePage() {
         setUsers(reset.users);
         setCatalog(reset.catalog);
         setActiveUser(null);
-        scheduleCloudSync(reset.users, reset.catalog);
+
+        dispatchAction({ type: "RESET" });
+
         setConfirmState((prev) => ({ ...prev, isOpen: false }));
         showToast("Reset to default data");
       },
@@ -469,6 +526,7 @@ export default function HomePage() {
         onDecreaseQuantity={handleDecreaseQuantity}
         onRequestRemove={handleRequestRemove}
         onRequestDeleteUser={handleRequestDeleteUser}
+        onRemoveCatalogItem={handleRemoveCatalogItem}
       />
 
       {/* Add User Modal */}
